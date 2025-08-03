@@ -10,7 +10,7 @@ from unstructured.partition.auto import partition
 logging.basicConfig(level=logging.ERROR) # Set to ERROR to hide unstructured's INFO messages
 
 # Define file extension categories
-TEXT_EXTENSIONS = {'.txt', '.md', '.json', '.csv', '.py', '.html', '.eml'}
+TEXT_EXTENSIONS = {'.txt', '.md', '.jsonl', '.json', '.csv', '.py', '.html', '.eml'}
 DOCUMENT_EXTENSIONS = {'.pdf', '.docx', '.pptx', '.xlsx'}
 IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff'}
 

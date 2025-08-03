@@ -9,8 +9,9 @@ import json
 from tqdm import tqdm
 import pickle
 import numpy as np
-
+import tiktoken
 import faiss
+from openai import OpenAI
 from sentence_transformers import SentenceTransformer
 from unstructured.partition.auto import partition
 from unstructured.partition.email import partition_email
@@ -20,12 +21,10 @@ import tiktoken
 logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(levelname)s - %(message)s')
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# --- !! CRITICAL !! ---
-# Path to your custom-trained, domain-expert model
+# --- MODEL AND DB CONFIGURATION ---
 FINETUNED_MODEL_PATH = os.path.join(SCRIPT_DIR, "finetuned_bge_real_estate_model")
-# The dimension of the bge-base-en-v1.5 model we fine-tuned
 EMBEDDING_DIMENSION = 768
-COLLECTION_NAME = "real_estate_finetuned_local" # A new name for our expert database
+COLLECTION_NAME = "real_estate_finetuned_local"
 
 FAISS_INDEX_PATH = os.path.join(SCRIPT_DIR, f"{COLLECTION_NAME}_faiss.bin")
 METADATA_PATH = os.path.join(SCRIPT_DIR, f"{COLLECTION_NAME}_metadata.pkl")
@@ -34,40 +33,101 @@ CHUNK_OVERLAP_TOKENS = 50
 
 # --- INITIALIZATION ---
 def initialize_services():
-    """Load the fine-tuned local embedding model."""
+    """Load the fine-tuned local embedding model and OpenAI client."""
+    load_dotenv()
+    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    if not client.api_key: raise ValueError("FATAL: OPENAI_API_KEY not found.")
+    print("[*] OpenAI client initialized.")
+
     if not os.path.isdir(FINETUNED_MODEL_PATH):
-        raise FileNotFoundError(
-            f"\n[!] FATAL: Fine-tuned model not found at '{FINETUNED_MODEL_PATH}'."
-            f"\n[!] Please run 'finetune_retriever.py' successfully before running this script."
-        )
+        raise FileNotFoundError(f"FATAL: Fine-tuned model not found at '{FINETUNED_MODEL_PATH}'.")
     
-    print(f"[*] Loading your fine-tuned embedding model from '{FINETUNED_MODEL_PATH}'...")
+    print(f"[*] Loading fine-tuned embedding model...")
     embedding_model = SentenceTransformer(FINETUNED_MODEL_PATH, device='cpu')
-    print("[+] Fine-tuned model loaded successfully.")
-    return embedding_model
+    print("[+] Fine-tuned model loaded.")
+    return client, embedding_model
 
 # --- DATA QUALITY CONTROL ---
 def filter_and_split_chunks(raw_chunks):
-    """Filters junk and splits oversized chunks."""
+    """
+    Filters out junk and splits oversized chunks to ensure data quality.
+    
+    Args:
+        raw_chunks (list[str]): A list of raw text strings extracted from a document.
+
+    Returns:
+        list[str]: A list of clean, correctly sized text chunks ready for embedding.
+    """
+    # Use the tokenizer that corresponds to modern OpenAI and many open-source models
     tokenizer = tiktoken.get_encoding("cl100k_base")
-    JUNK_PHRASES = ["messages and calls are end-to-end encrypted", "this message was deleted", "<media omitted>"]
+    
+    # Define a list of common, low-value phrases to filter out.
+    # This list can be expanded with more domain-specific junk phrases.
+    JUNK_PHRASES = [
+        "messages and calls are end-to-end encrypted",
+        "this message was deleted",
+        "<media omitted>",
+        "created group",
+        "added you",
+        "you're now an admin",
+        "tap to learn more"
+    ]
+    
     final_chunks = []
+    
     for chunk in raw_chunks:
+        # First, strip any leading/trailing whitespace from the chunk
         stripped_chunk = chunk.strip()
+        
+        # 1. Filter out junk chunks
+        # Check if the chunk is too short or contains a known junk phrase.
         if len(stripped_chunk) < 25 or any(phrase in stripped_chunk.lower() for phrase in JUNK_PHRASES):
-            continue
+            continue # Skip this chunk entirely
+            
+        # 2. Split oversized chunks
+        # Encode the chunk into tokens to measure its length
         tokens = tokenizer.encode(stripped_chunk)
+        
         if len(tokens) > CHUNK_SIZE_TOKENS:
+            # If the chunk is too long, split it into overlapping sub-chunks
             for i in range(0, len(tokens), CHUNK_SIZE_TOKENS - CHUNK_OVERLAP_TOKENS):
                 sub_chunk_tokens = tokens[i:i + CHUNK_SIZE_TOKENS]
+                # Decode the tokens back into a string and add to our final list
                 final_chunks.append(tokenizer.decode(sub_chunk_tokens))
         else:
+            # If the chunk is already a good size, add it directly
             final_chunks.append(stripped_chunk)
+            
     return final_chunks
 
-# --- SPECIALIZED FILE PARSERS ---
-def get_chunks_and_metadata(file_path):
-    """Processes a file, extracts text chunks and relevant metadata."""
+# --- INTELLIGENT PDF PARSER ---
+def extract_email_metadata_from_pdf_text(client, text_sample):
+    system_prompt = """
+    You are a data extraction engine. Analyze the text from the first page of a PDF.
+    Your task is to determine if it is an email and extract its metadata into a single, valid JSON object.
+    
+    RULES:
+    - Your entire response MUST be ONLY a valid JSON object.
+    - If the text is an email, return a JSON with "is_email": true and populate the other fields.
+    - If it is NOT an email, return a JSON with only one key: {"is_email": false}.
+    
+    JSON Schema for Emails:
+    {"is_email": true, "from": "...", "to": "...", "subject": "...", "date": "...", "summary": "...", "signature": "..."}
+    """
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": text_sample[:4000]}],
+            temperature=0.0, response_format={"type": "json_object"})
+        return json.loads(response.choices[0].message.content)
+    except Exception as e:
+        logging.error(f"Could not analyze PDF text with LLM. Error: {e}")
+        return {"is_email": False}
+    
+
+# --- SPECIALIZED FILE PARSERS (THE DEFINITIVE FIX) ---
+def get_chunks_and_metadata(client, file_path):
+    """Processes a file, intelligently extracts chunks and metadata."""
     file_ext = os.path.splitext(file_path)[1].lower()
     filename = os.path.basename(file_path)
     extraction_dir = os.path.join(SCRIPT_DIR, 'data', 'extracted')
@@ -76,6 +136,34 @@ def get_chunks_and_metadata(file_path):
     try:
         items_to_return = []
         file_level_metadata = base_metadata.copy()
+
+        if file_ext == '.jsonl':
+            with open(file_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    try:
+                        data = json.loads(line)
+                        body_dict = data.get('body')
+                        if not isinstance(body_dict, dict): continue
+
+                        # Unpack the text from the body dictionary
+                        text_content = body_dict.get('text', '')
+                        if not text_content: continue
+                        
+                        # Extract metadata from the top-level data object
+                        email_metadata = base_metadata.copy()
+                        to_field = data.get('to', [])
+                        cc_field = data.get('cc', [])
+                        email_metadata.update({
+                            "from": data.get('from', 'N/A'),
+                            "to": ", ".join(to_field) if isinstance(to_field, list) else str(to_field),
+                            "cc": ", ".join(cc_field) if isinstance(cc_field, list) else str(cc_field),
+                            "subject": data.get('subject', 'N/A'),
+                            "timestamp": data.get('timestamp', 'N/A')
+                        })
+                        items_to_return.append((text_content, email_metadata))
+                    except (json.JSONDecodeError, AttributeError):
+                        continue
+            return items_to_return
 
         if file_ext == '.txt' and filename.lower().startswith('whatsapp chat with'):
             chat_pattern = re.compile(r"^(\d{1,2}/\d{1,2}/\d{2,4},\s\d{1,2}:\d{2}(?:\s[ap]m)?)\s-\s([^:]+):\s(.*)", re.IGNORECASE)
@@ -104,11 +192,19 @@ def get_chunks_and_metadata(file_path):
                     final_items.append((clean_chunk, metadata))
             return final_items
 
-        elif file_ext == '.eml':
-            elements = partition_email(filename=file_path)
-            if elements: file_level_metadata.update(elements[0].metadata.to_dict())
-            raw_chunks = [str(el) for el in elements]
-        elif file_ext in {'.pdf', '.docx', '.txt'}:
+        elif file_ext == '.pdf':
+            try:
+                first_page_elements = partition(filename=file_path, strategy="fast", max_pages=1)
+                first_page_text = "\n".join([str(el) for el in first_page_elements])
+                email_metadata = extract_email_metadata_from_pdf_text(client, first_page_text)
+                if email_metadata.get("is_email"):
+                    print(f"    - Detected Email in PDF: {filename}")
+                    file_level_metadata.update(email_metadata)
+            except Exception as e:
+                logging.error(f"Could not perform PDF pre-check on {filename}: {e}")
+            raw_chunks = [str(el) for el in partition(filename=file_path, strategy="fast")]
+        
+        elif file_ext in {'.docx', '.txt'}:
             raw_chunks = [str(el) for el in partition(filename=file_path, strategy="fast")]
         elif file_ext in {'.xlsx', '.csv'}:
             df = pd.read_csv(file_path) if file_ext == '.csv' else pd.read_excel(file_path, engine='openpyxl')
@@ -116,8 +212,7 @@ def get_chunks_and_metadata(file_path):
         else:
             return []
         
-        final_chunks = filter_and_split_chunks(raw_chunks)
-        return [(chunk, file_level_metadata) for chunk in final_chunks]
+        return [(chunk, file_level_metadata) for chunk in raw_chunks]
 
     except Exception as e:
         logging.error(f"Could not process file {file_path}: {e}")
@@ -128,6 +223,7 @@ def sanitize_filename(filename):
     filename = filename.strip()
     return re.sub(r'[<>:"/\\|?*]', '_', filename).rstrip('. ')
 
+# --- UTILITIES ---
 def get_local_embeddings(model, chunks):
     try:
         return model.encode(chunks, show_progress_bar=False).tolist()
@@ -135,14 +231,14 @@ def get_local_embeddings(model, chunks):
         logging.error(f"Failed to get local embeddings: {e}")
         return []
 
-# --- MAIN EXECUTION (DEFINITIVE BATCHING FIX) ---
+# --- MAIN EXECUTION (Refactored for Correctness) ---
 def main():
     extraction_dir = os.path.join(SCRIPT_DIR, 'data', 'extracted')
     if not os.path.isdir(extraction_dir):
         print(f"[!] FATAL: Extracted data folder not found at '{extraction_dir}'")
         return
     
-    client = initialize_services()
+    client, embedding_model = initialize_services()
 
     if os.path.exists(FAISS_INDEX_PATH): os.remove(FAISS_INDEX_PATH)
     if os.path.exists(METADATA_PATH): os.remove(METADATA_PATH)
@@ -157,13 +253,24 @@ def main():
     for file_path in pbar:
         pbar.set_postfix_str(os.path.basename(file_path))
         
-        items_from_file = get_chunks_and_metadata(file_path)
+        # The client is now correctly passed for PDF email detection
+        items_from_file = get_chunks_and_metadata(client, file_path)
         if not items_from_file: continue
         
-        texts_to_embed = [item[0] for item in items_from_file]
-        metadatas_to_store = [item[1] for item in items_from_file]
+        # The quality filtering is now applied to the items
+        final_items = []
+        for text, metadata in items_from_file:
+            clean_chunks = filter_and_split_chunks([text])
+            for clean_chunk in clean_chunks:
+                final_items.append((clean_chunk, metadata))
+
+        if not final_items: continue
         
-        embeddings = get_local_embeddings(client, texts_to_embed)
+        texts_to_embed = [item[0] for item in final_items]
+        metadatas_to_store = [item[1] for item in final_items]
+        
+        # The correct embedding_model is now passed
+        embeddings = get_local_embeddings(embedding_model, texts_to_embed)
         if not embeddings: continue
 
         for i, embedding in enumerate(embeddings):

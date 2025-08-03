@@ -5,10 +5,12 @@ finetuned_bge_real_estate_model/
 checkpoints/
 credentials.json
 token.json
-metadata_store.pkl
-faiss_index.bin
-real_estate_finetuned_local_faiss.bin
+inspect_db.py
+generate_training_data.py
+finetune_retriever.py
+analyze_data.py
 real_estate_finetuned_local_metadata.pkl
+real_estate_finetuned_local_faiss.bin
 real_estate_training_dataset.jsonl
 __pycache__/
 *.pyc

@@ -11,3 +11,7 @@ google-generativeai
 sentence-transformers
 setfit
 datasets
+textblob
+textstat
+streamlit
+
