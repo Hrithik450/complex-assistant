@@ -32,12 +32,59 @@ CONTEXT_TOKEN_LIMIT = 100000
 
 # Use Streamlit's caching to load models and data only once
 @st.cache_resource
+
+# --- NEW: FILE DOWNLOADER ---
+def download_file_from_gdrive(file_id, destination):
+    """Downloads a file from a public Google Drive link."""
+    URL = "https://docs.google.com/uc?export=download"
+    
+    session = requests.Session()
+    response = session.get(URL, params={"id": file_id}, stream=True)
+    
+    # Get the total file size
+    total_size_in_bytes = int(response.headers.get('content-length', 0))
+    block_size = 1024 # 1 Kibibyte
+    
+    print(f"[*] Downloading '{os.path.basename(destination)}'...")
+    progress_bar = tqdm(total=total_size_in_bytes, unit='iB', unit_scale=True)
+    
+    with open(destination, 'wb') as f:
+        for data in response.iter_content(block_size):
+            progress_bar.update(len(data))
+            f.write(data)
+            
+    progress_bar.close()
+    
+    if total_size_in_bytes != 0 and progress_bar.n != total_size_in_bytes:
+        print("[!] ERROR, something went wrong during download.")
+        return False
+        
+    print(f"[+] Download complete: '{destination}'")
+    return True
+
 def initialize_services():
     """Load all necessary clients, models, and local data files."""
     print("[*] Loading services and data for the first time...")
+    load_dotenv()
+    # --- NEW: Check for local files and download if missing ---
+    gdrive_faiss_id = os.getenv("GDRIVE_FAISS_FILE_ID")
+    gdrive_metadata_id = os.getenv("GDRIVE_METADATA_FILE_ID")
+
     
     client = OpenAI(api_key=OPENAI_API_KEY)
     if not client.api_key: raise ValueError("FATAL: OPENAI_API_KEY not found.")
+
+    if not os.path.exists(FAISS_INDEX_PATH):
+        print(f"[!] FAISS index not found locally.")
+        if not gdrive_faiss_id:
+            raise FileNotFoundError("FATAL: FAISS index is missing and GDRIVE_FAISS_FILE_ID is not set in .env")
+        download_file_from_gdrive(gdrive_faiss_id, FAISS_INDEX_PATH)
+
+    if not os.path.exists(METADATA_PATH):
+        print(f"[!] Metadata store not found locally.")
+        if not gdrive_metadata_id:
+            raise FileNotFoundError("FATAL: Metadata store is missing and GDRIVE_METADATA_FILE_ID is not set in .env")
+        download_file_from_gdrive(gdrive_metadata_id, METADATA_PATH)
     
     if not os.path.isdir(FINETUNED_MODEL_PATH):
         st.error(f"FATAL: Fine-tuned model not found at '{FINETUNED_MODEL_PATH}'. Please run the training pipeline.")

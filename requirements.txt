@@ -14,4 +14,6 @@ datasets
 textblob
 textstat
 streamlit
+torch
+gdown
 

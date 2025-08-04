@@ -1,6 +1,7 @@
 # .gitignore
 .env
 data/
+.streamlit/secrets.toml
 finetuned_bge_real_estate_model/
 checkpoints/
 credentials.json
@@ -12,6 +13,7 @@ analyze_data.py
 real_estate_finetuned_local_metadata.pkl
 real_estate_finetuned_local_faiss.bin
 real_estate_training_dataset.jsonl
+
 __pycache__/
 *.pyc
 
