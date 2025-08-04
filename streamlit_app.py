@@ -148,6 +148,8 @@ if prompt := st.chat_input("Ask a question about your business..."):
         history.append(("user", prompt))
         final_answer = "The agent did not produce a final answer after its steps."
 
+        
+        # --- THIS IS THE MODIFIED EXECUTION LOOP ---
         for i in range(5):
             log_header = f"\n======================== STEP {i+1} ========================\n"
             append_to_thought_box(log_header)
@@ -169,7 +171,7 @@ if prompt := st.chat_input("Ask a question about your business..."):
                         final_answer = match.group(2)
                     else:
                         final_answer = "Could not parse the final answer from the agent's response."
-                    break
+                    break # Exit the loop, we have the final answer
 
                 elif "knowledge_base_search(" in action_text:
                     match = re.search(r"knowledge_base_search\(query=(['\"])(.*)\1\)", action_text, re.DOTALL)
@@ -181,8 +183,14 @@ if prompt := st.chat_input("Ask a question about your business..."):
                         append_to_thought_box(f"\n> Observation received from tool.\n")
                     else:
                         history.append(("user", "Observation: Could not parse the tool query."))
+                        final_answer = "Agent attempted to use a tool but failed to format the query correctly."
+                        break
                 else:
-                    final_answer = "Agent stopped because it generated a response without a valid Action."
+                    # --- THIS IS THE CRITICAL CHANGE ---
+                    # If the agent responds without a valid action, we treat its response
+                    # as the final answer instead of failing.
+                    append_to_thought_box("\n[!] Agent did not generate a valid action. Treating this response as a tentative answer.")
+                    final_answer = action_text 
                     break
 
             except Exception as e:

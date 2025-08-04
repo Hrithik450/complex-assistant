@@ -145,39 +145,74 @@ class KnowledgeBaseTool:
             match_count = 0
             if os.path.basename(metadata.get('source', '')) == BRIEFING_DOC_NAME:
                 continue # Explicitly skip the briefing document from search results
+            # --- MODIFIED LOGIC FOR MORE FLEXIBLE MATCHING ---
+            matches_any_filter = False
             for key, query_parts in filter_values.items():
                 metadata_value = metadata.get(key)
                 if metadata_value is not None:
-                    # --- DATE FILTERING LOGIC (Using the robust parser) ---
+                    # Date logic remains the same
                     if key in ['timestamp', 'date'] and isinstance(query_parts, dict):
+                        # ... (existing date logic is fine)
                         doc_date = self._parse_flexible_date(metadata_value)
-                        if doc_date:    
+                        if doc_date:
+                            is_match = True
                             try:
-                                if "$gte" in query_parts:
-                                    start_date = datetime.strptime(query_parts["$gte"], '%Y-%m-%d')
-                                    if doc_date < start_date:
-                                        match_count = 0
-                                        continue
-                                if "$lte" in query_parts:
-                                    end_date = datetime.strptime(query_parts["$lte"], '%Y-%m-%d')
-                                    # We only check the date part, ignore time for lte
-                                    if doc_date.date() > end_date.date(): 
-                                        match_count = 0
-                                        continue
+                                if "$gte" in query_parts and doc_date < datetime.strptime(query_parts["$gte"], '%Y-%m-%d'):
+                                    is_match = False
+                                if "$lte" in query_parts and doc_date.date() > datetime.strptime(query_parts["$lte"], '%Y-%m-%d').date():
+                                    is_match = False
+                                if is_match:
+                                    score += 1 # Give a point for matching the date filter
+                                    matches_any_filter = True
                             except (ValueError, TypeError):
-                                continue # Skip if filter date is malformed
-                    else:    
+                                continue
+                    else:
+                        # Text logic is now more flexible
                         metadata_value_lower = str(metadata_value).lower()
-                        # Check if all parts of the query value are in the metadata value
-                        if any(part in metadata_value_lower for part in query_parts):
-                            score += sum([1 if part in metadata_value_lower else 0 for part in query_parts]) # Add 1 point for each matching key
-                            match_count += 1
-
-            # Only consider documents that matched at least one filter condition
-            if match_count > 0:
-                # We can add more sophisticated scoring here later if needed
+                        # If ANY part of the query matches, it's a candidate.
+                        # We score based on HOW MANY parts match.
+                        num_matches = sum(1 for part in query_parts if part in metadata_value_lower)
+                        if num_matches > 0:
+                            score += num_matches
+                            matches_any_filter = True
+            
+            if matches_any_filter:
                 candidate_scores.append({'index': i, 'score': score})
-            # print(metadata['source'])
+            # --- END OF MODIFIED LOGIC ---
+
+            # for key, query_parts in filter_values.items():
+            #     metadata_value = metadata.get(key)
+            #     if metadata_value is not None:
+            #         # --- DATE FILTERING LOGIC (Using the robust parser) ---
+            #         if key in ['timestamp', 'date'] and isinstance(query_parts, dict):
+            #             doc_date = self._parse_flexible_date(metadata_value)
+            #             if doc_date:    
+            #                 try:
+            #                     if "$gte" in query_parts:
+            #                         start_date = datetime.strptime(query_parts["$gte"], '%Y-%m-%d')
+            #                         if doc_date < start_date:
+            #                             match_count = 0
+            #                             continue
+            #                     if "$lte" in query_parts:
+            #                         end_date = datetime.strptime(query_parts["$lte"], '%Y-%m-%d')
+            #                         # We only check the date part, ignore time for lte
+            #                         if doc_date.date() > end_date.date(): 
+            #                             match_count = 0
+            #                             continue
+            #                 except (ValueError, TypeError):
+            #                     continue # Skip if filter date is malformed
+            #         else:    
+            #             metadata_value_lower = str(metadata_value).lower()
+            #             # Check if all parts of the query value are in the metadata value
+            #             if any(part in metadata_value_lower for part in query_parts):
+            #                 score += sum([1 if part in metadata_value_lower else 0 for part in query_parts]) # Add 1 point for each matching key
+            #                 match_count += 1
+
+            # # Only consider documents that matched at least one filter condition
+            # if match_count > 0:
+            #     # We can add more sophisticated scoring here later if needed
+            #     candidate_scores.append({'index': i, 'score': score})
+            # # print(metadata['source'])
 
         # Sort candidates by their score (higher is better)
         candidate_scores.sort(key=lambda x: x['score'], reverse=True)
@@ -235,7 +270,8 @@ class ReActAgent:
         
         # --- NEW: Load briefing context and build the dynamic system prompt ---
         briefing_context = self._load_briefing_context(metadata_store)
-        
+
+        # --- MODIFIED PROMPT FOR STRONGER GROUNDING ---
         base_prompt = """
 You are an autonomous AI business analyst for a real estate company. Your goal is to provide clear, accurate answers to the user's question by using the tool provided.
 You have access to ONE powerful tool: `knowledge_base_search(query: str)`. This tool is intelligent and can understand natural language queries with dates, names, and topics. Provide it with a full, natural language question.
@@ -246,11 +282,28 @@ Thought: [Your reasoning and plan for the next step. If the previous step gave y
 Action: [Either a call to `knowledge_base_search(query='Your full, natural language question here')` OR, if you have sufficient information or have confirmed the information is not available, a call to `Final Answer(answer='Your final, synthesized answer, citing sources if possible.')`.]
 
 RULES:
-- ALWAYS use the `knowledge_base_search` tool at least once to answer the user's question. Do not try to answer from memory.
+- Your final answer MUST be synthesized *exclusively* from the 'Observation' content provided by the tool. Do not use your own knowledge.
+- If the 'Observation' is empty or does not contain the answer, you MUST state that the information could not be found in the documents. DO NOT provide generic explanations.
 - The context from the "INTERNAL BRIEFING" above is for your understanding only. Do not mention it in your answer. Use it to better interpret the user's query and the search results.
-- If the tool returns a message like "No documents were found", DO NOT try the same query again. Conclude that the information is not in the knowledge base and provide a final answer stating that. This is critical to avoid getting stuck.
-- Synthesize your final answer based *only* on the "Observation" provided by the tool.
+- If the tool returns a message like "No documents were found", DO NOT try the same query again. Conclude that the information is not in the knowledge base and provide a final answer stating that.
 """
+        # --- END OF MODIFIED PROMPT ---
+        
+#         base_prompt = """
+# You are an autonomous AI business analyst for a real estate company. Your goal is to provide clear, accurate answers to the user's question by using the tool provided.
+# You have access to ONE powerful tool: `knowledge_base_search(query: str)`. This tool is intelligent and can understand natural language queries with dates, names, and topics. Provide it with a full, natural language question.
+
+# For each step, you must first think about your plan and then decide on an action. Follow this format exactly:
+
+# Thought: [Your reasoning and plan for the next step. If the previous step gave you the answer, explain how you will synthesize it. If the tool returned no results, state that the information is not available and prepare to give a final answer.]
+# Action: [Either a call to `knowledge_base_search(query='Your full, natural language question here')` OR, if you have sufficient information or have confirmed the information is not available, a call to `Final Answer(answer='Your final, synthesized answer, citing sources if possible.')`.]
+
+# RULES:
+# - ALWAYS use the `knowledge_base_search` tool at least once to answer the user's question. Do not try to answer from memory.
+# - The context from the "INTERNAL BRIEFING" above is for your understanding only. Do not mention it in your answer. Use it to better interpret the user's query and the search results.
+# -  If the tool returns a message like "No documents were found", DO NOT try the same query again. Conclude that the information is not in the knowledge base and provide a final answer stating that, or include the partially relevant info if something has been retrieved already. This is critical to avoid getting stuck.
+# - Synthesize your final answer based *only* on the "Observation" provided by the tool.
+# """
         self.system_prompt = f"INTERNAL BRIEFING:\n{briefing_context}\n\n---\n\n{base_prompt}"
         self.history = [("system", self.system_prompt)]
         
