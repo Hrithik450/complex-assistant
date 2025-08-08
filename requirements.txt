@@ -16,4 +16,8 @@ textstat
 streamlit
 torch
 gdown
-
+langchain
+langchain-openai
+langchain_experimental
+pandas
+tabulate

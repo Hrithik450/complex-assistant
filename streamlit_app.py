@@ -1,203 +1,108 @@
 import streamlit as st
 import sys
 import os
-import re
-import gdown  # For downloading from Google Drive
-import zipfile # For unzipping the model folder
-from contextlib import contextmanager, redirect_stdout
-from io import StringIO
+import uuid
+from dotenv import load_dotenv
 
 # --- Add the current directory to the Python path ---
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(SCRIPT_DIR)
 
 # --- Import the agent and its dependencies ---
-# This assumes your agent.py file is in the same directory
-from agent import ReActAgent, KnowledgeBaseTool
-from openai import OpenAI
-from dotenv import load_dotenv
-
-
-# --- NEW: Function to download necessary files from Google Drive ---
-def download_files_from_gdrive():
-    """
-    Downloads the model, FAISS index, and metadata from Google Drive if they don't already exist.
-    """
-    # Define local paths within the Streamlit container
-    faiss_path = os.path.join(SCRIPT_DIR, "real_estate_finetuned_local_faiss.bin")
-    metadata_path = os.path.join(SCRIPT_DIR, "real_estate_finetuned_local_metadata.pkl")
-    model_path = os.path.join(SCRIPT_DIR, "finetuned_bge_real_estate_model")
-    model_zip_path = os.path.join(SCRIPT_DIR, "finetuned_model.zip")
-
-    # Check if files already exist. If so, do nothing.
-    if os.path.exists(faiss_path) and os.path.exists(metadata_path) and os.path.exists(model_path):
-        st.info("Model and data files already exist. Skipping download.")
-        return
-
-    st.info("Downloading required model and data files from Google Drive. This may take a moment...")
-
-    try:
-        # Get URLs from Streamlit secrets
-        faiss_url = st.secrets["GDRIVE_FAISS_URL"]
-        metadata_url = st.secrets["GDRIVE_METADATA_URL"]
-        model_zip_url = st.secrets["GDRIVE_MODEL_ZIP_URL"]
-
-        # Download files using gdown
-        with st.spinner("Downloading FAISS index..."):
-            gdown.download(url=faiss_url, output=faiss_path, quiet=False)
-        st.success("FAISS index downloaded.")
-
-        with st.spinner("Downloading metadata..."):
-            gdown.download(url=metadata_url, output=metadata_path, quiet=False)
-        st.success("Metadata downloaded.")
-
-        with st.spinner("Downloading fine-tuned model..."):
-            gdown.download(url=model_zip_url, output=model_zip_path, quiet=False)
-        st.success("Model zip file downloaded.")
-
-        # Unzip the model folder
-        with st.spinner("Unzipping model..."):
-            with zipfile.ZipFile(model_zip_path, 'r') as zip_ref:
-                zip_ref.extractall(SCRIPT_DIR)
-        st.success("Model unzipped successfully.")
-
-        # Clean up the downloaded zip file
-        os.remove(model_zip_path)
-
-        st.success("All required files are ready!")
-
-    except Exception as e:
-        st.error(f"Failed to download files from Google Drive. Error: {e}")
-        st.stop()
-
+# This assumes your agent_pro.py file is in the same directory
+from agent_pro import ManagerAgent, DataManager
 
 # --- Page Configuration ---
 st.set_page_config(
-    page_title="AI Business Analyst",
-    page_icon="🤖",
+    page_title="AI Business Analyst Pro",
+    page_icon="🚀",
     layout="wide"
 )
 
-st.title("🤖 AI Business Analyst for Real Estate")
-st.caption("Ask complex questions about your business documents. The agent will reason and use a knowledge base to find the answer.")
+st.title("🚀 AI Business Analyst Pro")
+st.caption("An intelligent multi-agent system with persistent memory and feedback.")
 
-
-# --- Main App Logic ---
-
-# Run the download function at the start of the app
-download_files_from_gdrive()
-
-
-# --- Initialization and Caching (Now runs AFTER files are downloaded) ---
+# --- Initialization and Caching ---
 @st.cache_resource
-def initialize_agent():
-    """Loads the environment variables and initializes the agent and its tools."""
+def initialize_system():
+    """Initializes the ManagerAgent. This runs only once."""
     load_dotenv()
-    # Use st.secrets for deployment, fallback to os.getenv for local dev
-    openai_api_key = st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
-    if not openai_api_key:
-        st.error("FATAL: OPENAI_API_KEY not found. Please add it to your Streamlit secrets.")
+    # Check for the API key
+    if not os.getenv("OPENAI_API_KEY"):
+        st.error("FATAL: OPENAI_API_KEY not found. Please create a .env file or set it as a secret.")
         st.stop()
-    
+
     try:
-        # The agent.py file automatically uses the correct file paths as they are in the same directory
-        openai_client = OpenAI(api_key=openai_api_key)
-        kb_tool = KnowledgeBaseTool(client=openai_client)
-        agent = ReActAgent(
-            client=openai_client, 
-            tool=kb_tool, 
-            metadata_store=kb_tool.metadata_store
-        )
+        agent = ManagerAgent()
         return agent
-    except FileNotFoundError as e:
-        st.error(f"A required file was not found after download: {e}. Please check the file paths and Google Drive links.")
-        st.stop()
     except Exception as e:
         st.error(f"A critical error occurred during initialization: {e}")
         import traceback
-        st.text(traceback.format_exc())
+        st.code(traceback.format_exc())
         st.stop()
 
-# Initialize the agent
-agent = initialize_agent()
+# Initialize the agent system
+manager_agent = initialize_system()
 
+# --- Session State Management ---
+# Ensure a unique session ID for each user's browser tab
+if "session_id" not in st.session_state:
+    st.session_state.session_id = str(uuid.uuid4())
+
+# Initialize chat history
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
+# --- Feedback Handling ---
+def handle_feedback(record_id, feedback_value):
+    """Callback function to update feedback in the database."""
+    # The DataManager is part of the agent, we can access it
+    manager_agent.data_manager.update_feedback(record_id, feedback_value)
+    st.toast(f"Thank you for your feedback!", icon="✅")
+    # Disable buttons after feedback is given
+    st.session_state[f"feedback_given_{record_id}"] = True
+
+# --- Display Chat History ---
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
+        # Add feedback buttons to assistant messages that haven't received feedback yet
+        if message["role"] == "assistant" and "record_id" in message:
+            record_id = message["record_id"]
+            if not st.session_state.get(f"feedback_given_{record_id}", False):
+                cols = st.columns(10)
+                with cols[0]:
+                    st.button("👍", key=f"up_{record_id}", on_click=handle_feedback, args=(record_id, 1))
+                with cols[1]:
+                    st.button("👎", key=f"down_{record_id}", on_click=handle_feedback, args=(record_id, -1))
 
-if prompt := st.chat_input("Ask a question about your business..."):
+# --- Main App Logic ---
+if prompt := st.chat_input("Ask a complex question..."):
+    # Add user message to UI
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
+    # Get agent's response
     with st.chat_message("assistant"):
-        response_container = st.container()
-        thought_box = response_container.empty()
-        
-        thinking_log = ""
-        
-        def append_to_thought_box(text):
-            global thinking_log
-            thinking_log += text
-            thought_box.markdown(f"**Thinking Process...**\n```log\n{thinking_log}\n```")
-
-        history = [("system", agent.system_prompt)]
-        history.append(("user", prompt))
-        final_answer = "The agent did not produce a final answer after its steps."
-
-        
-        # --- THIS IS THE MODIFIED EXECUTION LOOP ---
-        for i in range(5):
-            log_header = f"\n======================== STEP {i+1} ========================\n"
-            append_to_thought_box(log_header)
-
-            prompt_messages = [{"role": role, "content": content} for role, content in history]
+        with st.spinner("The AI team is thinking..."):
+            # Run the agent with the query and the unique session ID
+            response, record_id = manager_agent.run(
+                user_query=prompt, 
+                session_id=st.session_state.session_id
+            )
+            st.markdown(response)
             
-            try:
-                response = agent.client.chat.completions.create(
-                    model="gpt-4o", messages=prompt_messages, temperature=0.0
-                )
-                action_text = response.choices[0].message.content
-                
-                append_to_thought_box(action_text)
-                history.append(("assistant", action_text))
-
-                if "Final Answer(" in action_text:
-                    match = re.search(r"Final Answer\(answer=(['\"])(.*)\1\)", action_text, re.DOTALL)
-                    if match:
-                        final_answer = match.group(2)
-                    else:
-                        final_answer = "Could not parse the final answer from the agent's response."
-                    break # Exit the loop, we have the final answer
-
-                elif "knowledge_base_search(" in action_text:
-                    match = re.search(r"knowledge_base_search\(query=(['\"])(.*)\1\)", action_text, re.DOTALL)
-                    if match:
-                        query = match.group(2)
-                        append_to_thought_box(f"\n> Searching knowledge base for: '{query}'\n")
-                        observation = agent.tool.search(query=query)
-                        history.append(("user", f"Observation: {observation}"))
-                        append_to_thought_box(f"\n> Observation received from tool.\n")
-                    else:
-                        history.append(("user", "Observation: Could not parse the tool query."))
-                        final_answer = "Agent attempted to use a tool but failed to format the query correctly."
-                        break
-                else:
-                    # --- THIS IS THE CRITICAL CHANGE ---
-                    # If the agent responds without a valid action, we treat its response
-                    # as the final answer instead of failing.
-                    append_to_thought_box("\n[!] Agent did not generate a valid action. Treating this response as a tentative answer.")
-                    final_answer = action_text 
-                    break
-
-            except Exception as e:
-                st.error(f"An error occurred during agent execution: {e}")
-                final_answer = f"An error occurred: {e}"
-                break
-        
-        thought_box.empty()
-        response_container.markdown(final_answer)
-        st.session_state.messages.append({"role": "assistant", "content": final_answer})
+            # Add the response and its record_id to the UI history
+            st.session_state.messages.append({
+                "role": "assistant", 
+                "content": response, 
+                "record_id": record_id
+            })
+            
+            # Add feedback buttons for the new message
+            cols = st.columns(10)
+            with cols[0]:
+                st.button("👍", key=f"up_{record_id}", on_click=handle_feedback, args=(record_id, 1))
+            with cols[1]:
+                st.button("👎", key=f"down_{record_id}", on_click=handle_feedback, args=(record_id, -1))
