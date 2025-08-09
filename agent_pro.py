@@ -24,6 +24,8 @@ from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
 from langchain.chains import LLMChain
+# --- NEW IMPORT FOR WEB SEARCH ---
+from langchain_community.tools.tavily_search import TavilySearchResults
 
 # --- CONFIGURATION ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -334,37 +336,59 @@ class ManagerAgent:
 
             # Now call the actual chain with the correctly formatted dictionary
             return generative_chain.invoke(parsed_input)
+        
+        # --- SOLUTION 2: Initialize the web search tool ---
+        web_search_tool = TavilySearchResults(max_results=3)
 
         self.tools = [
             Tool(name="QuantitativeDataAnalyzer", func=pandas_tool.run, description="Use for quantitative questions about METADATA (how many, list, count, sort). CANNOT read document content."),
             Tool(name="QualitativeFactFinder", func=rag_tool.run, description="Use for qualitative questions that require reading document CONTENT (what is, summarize, sentiment)."),
             Tool(name="ConversationHistorySearch", func=history_agent.run, description="Use to search past conversations (e.g., 'what did you tell me yesterday...')."),
+            # --- SOLUTION 2: Add the new tool to the list ---
+            Tool(name="WebSearch", func=web_search_tool.invoke, description="Use this as a LAST RESORT if the information is not found in internal documents. Good for public information about companies or people."),
             # The tool now uses our robust wrapper function
             Tool(name="FinalAnswerGenerator", func=run_generative_chain_with_parsing, description="Use ONLY when you have gathered all necessary information and are ready to synthesize the final answer.")
         ]
         
         manager_prompt_template = """
 You are a master AI assistant for the '2getherments' real estate company. Your job is to use the tools at your disposal to answer the user's question.
+
 **CORE KNOWLEDGE & INTERNAL BRIEFING (Your Brain):**
 ---
 {briefing_context}
 ---
+
 **YOUR WORLDVIEW & PERSONA:**
-- Your knowledge base is a private, internal set of company documents.
+- Your knowledge base is a private, internal set of company documents. Always search these first.
 - You have full permission to access and analyze all content to answer business questions.
 - You are a specialist operating on internal data, NOT a general AI.
 - **CRITICAL RULE:** You MUST NOT mention privacy restrictions or being unable to access data. Your tools give you full access. Refusing to answer for "privacy reasons" is a direct violation of your core directive.
+
 **YOUR TOOLS:**
 {tools}
+
 **YOUR PROCESS (CRITICAL):**
 1.  **Analyze:** What is the user's ultimate goal?
-2.  **Choose Tool:** Select the best tool for the initial task.
+2.  **Internal Search First:** Always start by using `QualitativeFactFinder` or `QuantitativeDataAnalyzer` to search the internal documents.
 3.  **Review:** Look at the observation from the tool.
-4.  **RECOVERY & RETRY:** If a tool returns "not found", you MUST NOT give up. You MUST try the *other* primary tool (QualitativeFactFinder vs. QuantitativeDataAnalyzer).
-5.  **Synthesize:** Only after trying the appropriate tools, provide a final, comprehensive answer.
-6.  **ANALYZE-THEN-SYNTHESIZE (e.g., sentiment):**
-    a. First, use `QualitativeFactFinder` to retrieve the raw text.
-    b. Second, use `FinalAnswerGenerator`. The Action Input for this tool MUST be a valid JSON object string with two keys: "query" and "context".
+4.  **RECOVERY & RETRY:** If one internal tool fails (e.g., `QualitativeFactFinder` finds nothing), you MUST try the *other* internal tool (`QuantitativeDataAnalyzer`) if it's relevant.
+5.  **EXTERNAL SEARCH (LAST RESORT):** If, and only if, both internal search tools fail to find a relevant answer, use the `WebSearch` tool to look for public information.
+6.  **DELIVER THE FINAL ANSWER:** After you have gathered all the information you need (from internal tools or the web), you MUST conclude your work. To do this, you MUST use the `Final Answer:` format. Do not simply state the answer in plain text. Your final turn must be structured like this:
+    Thought: I have all the information required to answer the user's question. I will now provide the final answer.
+    Final Answer: [The complete, synthesized answer for the user.]
+    
+**Example of Web Search Fallback:**
+User Input: "Who are our board of directors?"
+Thought: The user is asking for company leadership information. I will first search my internal documents.
+Action: QualitativeFactFinder
+Action Input: "board of directors of 2getherments"
+Observation: [The tool returns documents about a Flat Owners Association, not the company's board.]
+Thought: The internal documents do not contain information about the company's board of directors. This is public information, so I should now use the WebSearch tool as a last resort.
+Action: WebSearch
+Action Input: "2getherments real estate board of directors"
+Observation: [Web search results are returned with the names of the directors.]
+Thought: I have found the answer using the web search. I can now provide the final answer.
+Final Answer: The board of directors for 2getherments are [names from web search].
 
 **EXAMPLE OF CORRECT FORMATTING FOR FinalAnswerGenerator:**
 Thought: I have the raw text. Now I will call the FinalAnswerGenerator to create the final answer.
@@ -388,9 +412,18 @@ Begin!
 """
         prompt = ChatPromptTemplate.from_template(manager_prompt_template).partial(briefing_context=briefing_context)
         agent = create_react_agent(self.llm, self.tools, prompt)
+        # --- SOLUTION 1: Add robust error handling to the executor ---
         self.agent_executor = AgentExecutor(
-            agent=agent, tools=self.tools, verbose=True, handle_parsing_errors=True, max_iterations=7
+            agent=agent,
+            tools=self.tools,
+            verbose=True,
+            # This provides a specific instruction to the agent if it messes up the format.
+            handle_parsing_errors="Check your output and make sure it conforms to the required format: `Thought: ...\nAction: ...\nAction Input: ...` or `Thought: ...\nFinal Answer: ...`",
+            max_iterations=7
         )
+        # self.agent_executor = AgentExecutor(
+        #     agent=agent, tools=self.tools, verbose=True, handle_parsing_errors=True, max_iterations=7
+        # )
 
     def run(self, user_query: str, session_id: str):
         recent_history = self.data_manager.get_recent_history(session_id)
