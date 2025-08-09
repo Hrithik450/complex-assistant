@@ -44,16 +44,6 @@ class SentenceTransformerEmbeddings(Embeddings):
     def embed_documents(self, texts: List[str]) -> List[List[float]]: return self.model.encode(texts).tolist()
     def embed_query(self, text: str) -> List[float]: return self.model.encode(text).tolist()
 
-class UnifiedDataParser:
-    @staticmethod
-    def parse_flexible_date(date_string: str):
-        if not isinstance(date_string, str): return None
-        formats_to_try = ['%m/%d/%y, %H:%M', '%A, %d %B, %Y %I.%M %p', '%Y-%m-%dT%H:%M:%S', '%Y-%m-%d']
-        for fmt in formats_to_try:
-            try: return datetime.strptime(date_string.strip(), fmt)
-            except (ValueError, TypeError): continue
-        return None
-
 class AliasResolver:
     def __init__(self, data_manager):
         self.dm = data_manager
@@ -84,11 +74,12 @@ class DataManager:
         self.cross_encoder = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
         self.faiss_index = faiss.read_index(FAISS_INDEX_PATH)
         with open(METADATA_PATH, "rb") as f: self.metadata_store = pickle.load(f)
+
         self.df = pd.DataFrame(self.metadata_store)
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            for col in ['date', 'timestamp']:
-                if col in self.df.columns: self.df[col] = pd.to_datetime(self.df[col], errors='coerce')
+
+        if 'parsed_date' in self.df.columns:
+            self.df['parsed_date'] = pd.to_datetime(self.df['parsed_date'], errors='coerce')
+
         self.metadata_keys = list(self.metadata_store[0].keys()) if self.metadata_store else []
         self.alias_resolver = AliasResolver(self)
         logging.info(f"[DataManager] Loaded {len(self.metadata_store)} vectors and a DataFrame with {len(self.df)} rows.")
@@ -130,18 +121,31 @@ class RAGSearchTool:
         system_prompt = f"""
         You are an expert query analyzer. Decompose a user's query into a structured JSON object.
         Today's date is {today_str}.
+
         ## AVAILABLE METADATA FIELDS FOR FILTERING: {', '.join(f"'{key}'" for key in dm.metadata_keys)}.
+
         **RULES:**
         1. Decompose into `semantic_query` (core topic) and `metadata_filter` (dictionary).
         2. Map names (e.g., "from Raja") to `from` or `sender` fields.
-        3. Map document types ("in emails", "whatsapp chat") to a `source` filter.
-        4. Handle relative dates ("last month", "this week") by creating a date filter for `timestamp` or `date`.
+        3. Map document types ("in emails", "whatsapp chat") to a `file_type` filter.
+        4. For any date-related filtering (e.g., "last month", "in July 2024"), you MUST create a filter for the `parsed_date` field.
         5. Your response MUST be ONLY the single JSON object.
+
         **EXAMPLES:**
-        User Query: "what is the sentiment of 2g tula customers from jan 2025 to july 2025 in emails?"
-        Your JSON: {{"semantic_query": "sentiment of 2g tula customers", "metadata_filter": {{"source": "mail", "date": {{"$gte": "2025-01-01", "$lte": "2025-07-31"}}}}}}
-        User Query: "what is the sentiment of 2gtula whatsapp chat from jan 2025 to june 2025?"
-        Your JSON: {{"semantic_query": "sentiment analysis of 2gtula WhatsApp chat", "metadata_filter": {{"source": "2gtula whatsapp", "timestamp": {{"$gte": "2025-01-01", "$lte": "2025-06-30"}}}}}}
+        -   User Query: "what is the sentiment of 2g tula customers from jan 2025 to july 2025 in emails?"
+            Your JSON: {{"semantic_query": "sentiment of 2g tula customers", "metadata_filter": {{"file_type": "mail", "parsed_date": {{"$gte": "2025-01-01", "$lte": "2025-07-31"}}}}}}
+        -   User Query: "what is the sentiment of 2gtula whatsapp chat from jan 2025 to june 2025?"
+            Your JSON: {{"semantic_query": "sentiment analysis of 2gtula WhatsApp chat", "metadata_filter": {{"file_type": "2gtula whatsapp", "parsed_date": {{"$gte": "2025-01-01", "$lte": "2025-06-30"}}}}}}
+        -   User Query: "Find emails from customer communications this week"
+            Your JSON:
+                        {{
+                        "semantic_query": "emails from customer communications",
+                        "metadata_filter": {{
+                            "from": "customer communications",
+                            "file_type": "email",
+                            "parsed_date": {{ "$gte": "{ (datetime.now() - timedelta(days=datetime.now().weekday())).strftime('%Y-%m-%d') }" }}
+                        }}
+                        }}
         """
         try:
             response = dm.client.chat.completions.create(
@@ -162,25 +166,32 @@ class RAGSearchTool:
 
     def _apply_flexible_filter(self, filter_dict: dict, max_candidates: int = 500):
         candidate_scores = []
-        filter_values = {key: (str(value).lower().split() if key not in ['timestamp', 'date'] else value) for key, value in filter_dict.items()}
-        for i, metadata in enumerate(self.data_manager.metadata_store):
+        filter_values = {key: (str(value).lower().split() if key != 'parsed_date' else value) for key, value in filter_dict.items()}
+        # Get a version of the dataframe with just the columns we need for filtering
+        df_for_filtering = self.data_manager.df[list(filter_values.keys())].copy()
+
+        for i, row in df_for_filtering.iterrows():
+            metadata = row.to_dict()
             if os.path.basename(metadata.get('source', '')) == BRIEFING_DOC_NAME: continue
+            
             score = 0
             matches_any_filter = False
             for key, query_value in filter_values.items():
                 metadata_value = metadata.get(key)
-                if metadata_value is None: continue
-                if key in ['timestamp', 'date'] and isinstance(query_value, dict):
-                    doc_date = UnifiedDataParser.parse_flexible_date(metadata_value)
+                if pd.isna(metadata_value): continue
+
+                if key == 'parsed_date' and isinstance(query_value, dict):
+                    doc_date = metadata_value # This is already a datetime object
                     if doc_date:
                         is_match = True
                         try:
-                            if "$gte" in query_value and doc_date < datetime.strptime(query_value["$gte"], '%Y-%m-%d'): is_match = False
+                            # --- THIS IS THE FIX: Compare date parts directly ---
+                            if "$gte" in query_value and doc_date.date() < datetime.strptime(query_value["$gte"], '%Y-%m-%d').date(): is_match = False
                             if "$lte" in query_value and doc_date.date() > datetime.strptime(query_value["$lte"], '%Y-%m-%d').date(): is_match = False
                             if is_match:
                                 score += 5
                                 matches_any_filter = True
-                        except (ValueError, TypeError): continue
+                        except (ValueError, TypeError, AttributeError): continue
                 else:
                     metadata_value_lower = str(metadata_value).lower()
                     query_parts = query_value if isinstance(query_value, list) else str(query_value).lower().split()
@@ -190,6 +201,7 @@ class RAGSearchTool:
                         matches_any_filter = True
             if matches_any_filter:
                 candidate_scores.append({'index': i, 'score': score})
+        
         candidate_scores.sort(key=lambda x: x['score'], reverse=True)
         logging.info(f"    - Found {len(candidate_scores)} candidates after flexible filtering.")
         return [item['index'] for item in candidate_scores[:max_candidates]]
@@ -241,16 +253,31 @@ class PandasQueryTool:
         self.df = data_manager.df
         df_prefix = f"""
 You are a world-class data analyst working with a pandas DataFrame named `df`.
+
+**CRITICAL RULES FOR QUERYING:**
+
+1.  **USE `parsed_date` FOR ALL DATE OPERATIONS**: The DataFrame has a standardized column named `parsed_date` which is already a datetime object. For any questions involving dates (e.g., "in September 2024", "last month", "latest"), you MUST use this column.
+    -   Correct Example: `df[df['parsed_date'].dt.month == 9]`
+    -   **DO NOT USE** any other date-like columns.
+
+2.  **IDENTIFY FILE TYPES**: Use the `file_type` column to filter for specific document types.
+    -   `df[df['file_type'] == 'email']`
+    -   `df[df['file_type'] == 'whatsapp']`
+
+3.  **COUNT UNIQUE ITEMS**: When asked to count unique things like email threads, use `nunique()` on the appropriate ID column.
+    -   Correct Example for unique threads: `df[df['file_type'] == 'email']['threadId'].nunique()`
+
+4.  **FILTER BY NAME**: When filtering by a person's name (in `from` or `sender`), always use a case-insensitive, partial string match.
+    -   Correct Example: `df[df['from'].str.contains('Sankar', case=False, na=False)]`
+
 **DataFrame Schema:**
-- `source`: The file path. Use to filter by type (e.g., '.pdf', 'whatsapp', '.jsonl').
-- `from`: The sender of an **email**.
-- `sender`: The sender of a **WhatsApp message**.
-- `subject`: The subject line of an email.
-- `date`, `timestamp`: The date of the document. Already converted to datetime objects.
-**CRITICAL RULES:**
-1. A person's name could be in 'from' (emails) or 'sender' (WhatsApp).
-2. When filtering for a name, you MUST use a case-insensitive, partial string match. Correct code: `df[df['column_name'].str.contains('name', case=False, na=False)]`.
-3. When asked for the "last" or "latest" item, sort by date descending and take the first one. E.g., `.sort_values(by='date', ascending=False).head(1)`.
+- `source`:  The original file path.
+- `file_type`: The type of document ('email', 'whatsapp', 'pdf', 'docx', etc.).
+- `from`, `to`, `cc`, `subject`: Email fields.
+- `sender`: WhatsApp message sender.
+- `id`, `threadId`: Unique IDs for emails.
+- `parsed_date`: The standardized datetime object for all records. **USE THIS FOR DATES.**
+
 """
         self.agent_executor = create_pandas_dataframe_agent(
             llm=llm, df=self.df, agent_type="openai-tools",
@@ -376,7 +403,10 @@ You are a master AI assistant for the '2getherments' real estate company. Your j
 6.  **DELIVER THE FINAL ANSWER:** After you have gathered all the information you need (from internal tools or the web), you MUST conclude your work. To do this, you MUST use the `Final Answer:` format. Do not simply state the answer in plain text. Your final turn must be structured like this:
     Thought: I have all the information required to answer the user's question. I will now provide the final answer.
     Final Answer: [The complete, synthesized answer for the user.]
-    
+7.  **CONCLUDING WHEN INFORMATION IS NOT FOUND:** If you have used all relevant tools and still cannot find the answer, you MUST conclude by using the `Final Answer:` format to inform the user that the information is not available.
+    Thought: I have exhausted all my tools and cannot find the requested information. I will now inform the user.
+    Final Answer: I could not find any information regarding [the user's query] in the available documents or through a web search.
+
 **Example of Web Search Fallback:**
 User Input: "Who are our board of directors?"
 Thought: The user is asking for company leadership information. I will first search my internal documents.
@@ -421,9 +451,6 @@ Begin!
             handle_parsing_errors="Check your output and make sure it conforms to the required format: `Thought: ...\nAction: ...\nAction Input: ...` or `Thought: ...\nFinal Answer: ...`",
             max_iterations=7
         )
-        # self.agent_executor = AgentExecutor(
-        #     agent=agent, tools=self.tools, verbose=True, handle_parsing_errors=True, max_iterations=7
-        # )
 
     def run(self, user_query: str, session_id: str):
         recent_history = self.data_manager.get_recent_history(session_id)
@@ -436,8 +463,8 @@ Begin!
 # --- MAIN SCRIPT EXECUTION ---
 if __name__ == "__main__":
     load_dotenv()
-    if not os.getenv("OPENAI_API_KEY"):
-        print("[!] FATAL: OPENAI_API_KEY not found in .env file.")
+    if not os.getenv("OPENAI_API_KEY") or not os.getenv("TAVILY_API_KEY"):
+        print("[!] FATAL: OPENAI_API_KEY or TAVILY_API_KEY not found in .env file.")
     else:
         try:
             manager_agent = ManagerAgent()

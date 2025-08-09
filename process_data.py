@@ -14,8 +14,7 @@ import faiss
 from openai import OpenAI
 from sentence_transformers import SentenceTransformer
 from unstructured.partition.auto import partition
-from unstructured.partition.email import partition_email
-import tiktoken
+from datetime import datetime
 
 # --- CONFIGURATION ---
 logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -47,72 +46,111 @@ def initialize_services():
     print("[+] Fine-tuned model loaded.")
     return client, embedding_model
 
+# --- UNIFIED DATE PARSER ---
+class UnifiedDataParser:
+    @staticmethod
+    def parse_flexible_date(date_string: str):
+        if not isinstance(date_string, str): return None
+        formats_to_try = [
+            # Formats from JSONL files
+            '%Y-%m-%dT%H:%M:%SZ',          # e.g., "2019-11-20T13:36:36Z"
+            
+            # Formats from PDF email headers
+            '%A, %d %B, %Y %I.%M %p',      # e.g., "Tuesday, 8 July, 2025 6.15 PM"
+            
+            # Formats from PDF email reply chains
+            '%a, %b %d, %Y at %I:%M %p',   # e.g., "On Mon, Jul 7, 2025 at 9:37 PM"
+            '%a, %d %b %Y at %I:%M %p',   # e.g., "On Tue, 8 Jul 2025 at 6:07 PM"
+            '%a, %d %b, %Y, %I:%M %p',    # e.g., "On Fri, 13 Dec, 2024, 6:05 pm"
+
+            # Formats from WhatsApp
+            '%m/%d/%y, %I:%M\u202f%p',    # Handles '9/18/23, 2:10 PM' with special space
+            '%m/%d/%y, %H:%M',           # Handles '3/13/24, 16:09'
+            '%d/%m/%y, %H:%M',           # Handles '12/6/22, 09:46'
+            
+            # Generic formats
+            '%Y-%m-%dT%H:%M:%S', 
+            '%Y-%m-%d',
+            '%a, %d %b %Y %H:%M:%S %z'
+        ]
+        for fmt in formats_to_try:
+            try:
+                dt_object = datetime.strptime(date_string.strip(), fmt)
+                return dt_object.strftime('%Y-%m-%d %H:%M:%S')
+            except (ValueError, TypeError):
+                continue
+        return None
+
 # --- DATA QUALITY CONTROL ---
 def filter_and_split_chunks(raw_chunks):
-    """
-    Filters out junk and splits oversized chunks to ensure data quality.
-    
-    Args:
-        raw_chunks (list[str]): A list of raw text strings extracted from a document.
-
-    Returns:
-        list[str]: A list of clean, correctly sized text chunks ready for embedding.
-    """
-    # Use the tokenizer that corresponds to modern OpenAI and many open-source models
+    """Filters out junk and splits oversized chunks."""
     tokenizer = tiktoken.get_encoding("cl100k_base")
-    
-    # Define a list of common, low-value phrases to filter out.
-    # This list can be expanded with more domain-specific junk phrases.
     JUNK_PHRASES = [
-        "messages and calls are end-to-end encrypted",
-        "this message was deleted",
-        "<media omitted>",
-        "created group",
-        "added you",
-        "you're now an admin",
-        "tap to learn more"
+        "messages and calls are end-to-end encrypted", "this message was deleted",
+        "<media omitted>", "created group", "added you", "you're now an admin",
+        "tap to learn more", "sent from my iphone", "kind regards", "best regards"
     ]
-    
     final_chunks = []
-    
     for chunk in raw_chunks:
-        # First, strip any leading/trailing whitespace from the chunk
         stripped_chunk = chunk.strip()
-        
-        # 1. Filter out junk chunks
-        # Check if the chunk is too short or contains a known junk phrase.
         if len(stripped_chunk) < 25 or any(phrase in stripped_chunk.lower() for phrase in JUNK_PHRASES):
-            continue # Skip this chunk entirely
-            
-        # 2. Split oversized chunks
-        # Encode the chunk into tokens to measure its length
+            continue
         tokens = tokenizer.encode(stripped_chunk)
-        
         if len(tokens) > CHUNK_SIZE_TOKENS:
-            # If the chunk is too long, split it into overlapping sub-chunks
             for i in range(0, len(tokens), CHUNK_SIZE_TOKENS - CHUNK_OVERLAP_TOKENS):
                 sub_chunk_tokens = tokens[i:i + CHUNK_SIZE_TOKENS]
-                # Decode the tokens back into a string and add to our final list
                 final_chunks.append(tokenizer.decode(sub_chunk_tokens))
         else:
-            # If the chunk is already a good size, add it directly
             final_chunks.append(stripped_chunk)
-            
     return final_chunks
 
-# --- INTELLIGENT PDF PARSER ---
+# --- INTELLIGENT EMAIL BODY CHUNKER ---
+def intelligently_chunk_email_body(body_text):
+    """
+    Separates the main content of an email from the signature and reply chain,
+    then chunks only the main content to avoid noise.
+    """
+    if not isinstance(body_text, str):
+        return [], None
+
+    signature_keywords = [r'thanks,', r'thank you,', r'best regards,', r'sincerely,', r'kind regards,']
+    reply_keywords = [r'On\s.+wrote:', r'From:', r'Sent:', r'Date:', r'Subject:', r'To:']
+    
+    main_content = body_text
+    signature = None
+
+    for keyword in signature_keywords:
+        parts = re.split(f'(\n\s*{keyword}.*)', main_content, 1, re.IGNORECASE)
+        if len(parts) > 1:
+            main_content = parts[0]
+            signature = parts[1].strip()
+            break
+
+    for keyword in reply_keywords:
+        parts = re.split(f'(\n\s*{keyword}.*)', main_content, 1, re.IGNORECASE)
+        if len(parts) > 1:
+            main_content = parts[0]
+            break
+
+    main_content_chunks = filter_and_split_chunks([main_content.strip()])
+    
+    return main_content_chunks, signature
+
+# --- PDF METADATA EXTRACTOR ---
 def extract_email_metadata_from_pdf_text(client, text_sample):
+    """Updated to extract more fields: cc, bcc, summary, signature."""
     system_prompt = """
-    You are a data extraction engine. Analyze the text from the first page of a PDF.
-    Your task is to determine if it is an email and extract its metadata into a single, valid JSON object.
+    You are a data extraction engine. Analyze the text from a PDF.
+    Determine if it is an email and extract its metadata into a single, valid JSON object.
     
     RULES:
     - Your entire response MUST be ONLY a valid JSON object.
-    - If the text is an email, return a JSON with "is_email": true and populate the other fields.
+    - If the text is an email, return a JSON with "is_email": true and populate all other fields.
+    - If a field like 'cc' or 'bcc' is not present, omit it or set its value to an empty string.
     - If it is NOT an email, return a JSON with only one key: {"is_email": false}.
     
     JSON Schema for Emails:
-    {"is_email": true, "from": "...", "to": "...", "subject": "...", "date": "...", "summary": "...", "signature": "..."}
+    {"is_email": true, "from": "...", "to": "...", "cc": "...", "bcc": "...", "subject": "...", "date": "...", "summary": "A concise one-sentence summary.", "signature": "..."}
     """
     try:
         response = client.chat.completions.create(
@@ -123,105 +161,118 @@ def extract_email_metadata_from_pdf_text(client, text_sample):
     except Exception as e:
         logging.error(f"Could not analyze PDF text with LLM. Error: {e}")
         return {"is_email": False}
-    
 
-# --- SPECIALIZED FILE PARSERS (THE DEFINITIVE FIX) ---
-def get_chunks_and_metadata(client, file_path):
-    """Processes a file, intelligently extracts chunks and metadata."""
+# --- MASTER FILE PARSER ---
+def get_items_from_file(client, file_path):
+    """
+    Master function to process a single file. It determines the file type,
+    extracts all relevant metadata, and returns a list of (text, metadata) tuples.
+    """
     file_ext = os.path.splitext(file_path)[1].lower()
     filename = os.path.basename(file_path)
-    extraction_dir = os.path.join(SCRIPT_DIR, 'data', 'extracted')
-    base_metadata = {'source': os.path.relpath(file_path, extraction_dir)}
+    base_metadata = {'source': file_path}
     
     try:
         items_to_return = []
-        file_level_metadata = base_metadata.copy()
 
         if file_ext == '.jsonl':
+            base_metadata['file_type'] = 'email'
             with open(file_path, 'r', encoding='utf-8') as f:
                 for line in f:
                     try:
                         data = json.loads(line)
-                        body_dict = data.get('body')
-                        if not isinstance(body_dict, dict): continue
-
-                        # Unpack the text from the body dictionary
-                        text_content = body_dict.get('text', '')
-                        if not text_content: continue
+                        body_text = data.get('body', {}).get('text', '')
+                        if not body_text: continue
                         
-                        # Extract metadata from the top-level data object
                         email_metadata = base_metadata.copy()
-                        to_field = data.get('to', [])
-                        cc_field = data.get('cc', [])
+                        
+                        # --- THIS IS THE CHANGE: Add email and thread IDs ---
                         email_metadata.update({
+                            "id": data.get('id', 'N/A'),
+                            "threadId": data.get('threadId', 'N/A'),
                             "from": data.get('from', 'N/A'),
-                            "to": ", ".join(to_field) if isinstance(to_field, list) else str(to_field),
-                            "cc": ", ".join(cc_field) if isinstance(cc_field, list) else str(cc_field),
+                            "to": data.get('to', 'N/A'),
+                            "cc": data.get('cc', 'N/A'),
+                            "bcc": data.get('bcc', 'N/A'),
                             "subject": data.get('subject', 'N/A'),
-                            "timestamp": data.get('timestamp', 'N/A')
+                            "parsed_date": UnifiedDataParser.parse_flexible_date(data.get('date'))
                         })
-                        items_to_return.append((text_content, email_metadata))
+                        
+                        main_chunks, signature = intelligently_chunk_email_body(body_text)
+                        if signature:
+                            email_metadata['signature'] = signature
+                        
+                        for chunk in main_chunks:
+                            items_to_return.append((chunk, email_metadata))
                     except (json.JSONDecodeError, AttributeError):
                         continue
             return items_to_return
 
-        if file_ext == '.txt' and filename.lower().startswith('whatsapp chat with'):
-            chat_pattern = re.compile(r"^(\d{1,2}/\d{1,2}/\d{2,4},\s\d{1,2}:\d{2}(?:\s[ap]m)?)\s-\s([^:]+):\s(.*)", re.IGNORECASE)
-            current_message_text = ""
-            current_msg_meta = {}
-            with open(file_path, 'r', encoding='utf-8') as f:
-                for line in f:
-                    match = chat_pattern.match(line)
-                    if match:
-                        if current_message_text:
-                            items_to_return.append((current_message_text, current_msg_meta))
-                        timestamp, sender, message = match.groups()
-                        current_message_text = message.strip()
-                        current_msg_meta = base_metadata.copy()
-                        current_msg_meta['sender'] = sender.strip()
-                        current_msg_meta['timestamp'] = timestamp.strip()
-                    else:
-                        current_message_text += "\n" + line.strip()
-            if current_message_text:
-                items_to_return.append((current_message_text, current_msg_meta))
+        if file_ext == '.txt' and (filename.lower().startswith('whatsapp chat with') or 'whatsapp' in filename.lower()):
+            base_metadata['file_type'] = 'whatsapp'
+            # This regex is now more robust to handle different date formats and system messages
+            chat_pattern = re.compile(
+                r"^(\d{1,2}/\d{1,2}/\d{2,4},\s\d{1,2}:\d{2}(?:\u202f[ap]m)?)\s-\s([^:]+):\s(.*)", 
+                re.IGNORECASE | re.DOTALL
+            )
+            system_message_pattern = re.compile(r"(\bcreated group\b|\badded you\b|\bchanged the subject\b)")
             
-            final_items = []
-            for text, metadata in items_to_return:
-                clean_chunks = filter_and_split_chunks([text])
-                for clean_chunk in clean_chunks:
-                    final_items.append((clean_chunk, metadata))
-            return final_items
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            
+            # Split the file by the date pattern to handle multi-line messages correctly
+            # The regex `(?=...)` is a positive lookahead, which splits the text without consuming the delimiter
+            messages = re.split(r'(?=\d{1,2}/\d{1,2}/\d{2,4},\s\d{1,2}:\d{2})', content)
+            
+            for message_block in messages:
+                if not message_block.strip(): continue
+                match = chat_pattern.match(message_block)
+                if match:
+                    timestamp, sender, message = match.groups()
+                    
+                    # Filter out system messages and junk
+                    if system_message_pattern.search(message):
+                        continue
+                    
+                    msg_metadata = base_metadata.copy()
+                    msg_metadata.update({
+                        'sender': sender.strip(),
+                        'parsed_date': UnifiedDataParser.parse_flexible_date(timestamp.strip())
+                    })
+                    items_to_return.append((message.strip(), msg_metadata))
+            return items_to_return
 
-        elif file_ext == '.pdf':
+        # Generic Handlers
+        raw_chunks = []
+        if file_ext == '.pdf':
+            base_metadata['file_type'] = 'pdf'
             try:
-                first_page_elements = partition(filename=file_path, strategy="fast", max_pages=1)
-                first_page_text = "\n".join([str(el) for el in first_page_elements])
-                email_metadata = extract_email_metadata_from_pdf_text(client, first_page_text)
-                if email_metadata.get("is_email"):
+                elements = partition(filename=file_path, strategy="fast")
+                raw_chunks = [str(el) for el in elements]
+                email_meta = extract_email_metadata_from_pdf_text(client, "\n".join(raw_chunks[:5]))
+                if email_meta.get("is_email"):
                     print(f"    - Detected Email in PDF: {filename}")
-                    file_level_metadata.update(email_metadata)
+                    base_metadata['file_type'] = 'email'
+                    base_metadata.update(email_meta)
+                    base_metadata['parsed_date'] = UnifiedDataParser.parse_flexible_date(email_meta.get('date'))
             except Exception as e:
-                logging.error(f"Could not perform PDF pre-check on {filename}: {e}")
-            raw_chunks = [str(el) for el in partition(filename=file_path, strategy="fast")]
+                logging.error(f"Could not partition PDF {filename}: {e}")
         
-        elif file_ext in {'.docx', '.txt'}:
+        elif file_ext == '.docx':
+            base_metadata['file_type'] = 'docx'
             raw_chunks = [str(el) for el in partition(filename=file_path, strategy="fast")]
         elif file_ext in {'.xlsx', '.csv'}:
+            base_metadata['file_type'] = 'spreadsheet'
             df = pd.read_csv(file_path) if file_ext == '.csv' else pd.read_excel(file_path, engine='openpyxl')
             raw_chunks = [f"Row {idx+1}: {', '.join(f'{col}: {val}' for col, val in row.astype(str).items())}" for idx, row in df.iterrows()]
         else:
             return []
         
-        return [(chunk, file_level_metadata) for chunk in raw_chunks]
+        return [(chunk, base_metadata) for chunk in raw_chunks]
 
     except Exception as e:
         logging.error(f"Could not process file {file_path}: {e}")
         return []
-    
-# --- UTILITIES ---
-def sanitize_filename(filename):
-    filename = filename.strip()
-    return re.sub(r'[<>:"/\\|?*]', '_', filename).rstrip('. ')
 
 # --- UTILITIES ---
 def get_local_embeddings(model, chunks):
@@ -231,11 +282,11 @@ def get_local_embeddings(model, chunks):
         logging.error(f"Failed to get local embeddings: {e}")
         return []
 
-# --- MAIN EXECUTION (Refactored for Correctness) ---
+# --- MAIN EXECUTION ---
 def main():
-    extraction_dir = os.path.join(SCRIPT_DIR, 'data', 'extracted')
-    if not os.path.isdir(extraction_dir):
-        print(f"[!] FATAL: Extracted data folder not found at '{extraction_dir}'")
+    data_dir = os.path.join(SCRIPT_DIR, 'data')
+    if not os.path.isdir(data_dir):
+        print(f"[!] FATAL: Data folder not found at '{data_dir}'")
         return
     
     client, embedding_model = initialize_services()
@@ -243,7 +294,7 @@ def main():
     if os.path.exists(FAISS_INDEX_PATH): os.remove(FAISS_INDEX_PATH)
     if os.path.exists(METADATA_PATH): os.remove(METADATA_PATH)
 
-    files_to_process = [os.path.join(root, file) for root, _, files in os.walk(extraction_dir) for file in files]
+    files_to_process = [os.path.join(root, file) for root, _, files in os.walk(data_dir) for file in files]
     print(f"[+] Found {len(files_to_process)} total files to process.")
     
     all_embeddings = []
@@ -253,23 +304,23 @@ def main():
     for file_path in pbar:
         pbar.set_postfix_str(os.path.basename(file_path))
         
-        # The client is now correctly passed for PDF email detection
-        items_from_file = get_chunks_and_metadata(client, file_path)
-        if not items_from_file: continue
+        raw_items = get_items_from_file(client, file_path)
+        if not raw_items: continue
         
-        # The quality filtering is now applied to the items
         final_items = []
-        for text, metadata in items_from_file:
-            clean_chunks = filter_and_split_chunks([text])
-            for clean_chunk in clean_chunks:
-                final_items.append((clean_chunk, metadata))
+        for text, metadata in raw_items:
+            if metadata.get('file_type') != 'email':
+                clean_chunks = filter_and_split_chunks([text])
+                for chunk in clean_chunks:
+                    final_items.append((chunk, metadata))
+            else:
+                final_items.append((text, metadata))
 
         if not final_items: continue
         
         texts_to_embed = [item[0] for item in final_items]
         metadatas_to_store = [item[1] for item in final_items]
         
-        # The correct embedding_model is now passed
         embeddings = get_local_embeddings(embedding_model, texts_to_embed)
         if not embeddings: continue
 
@@ -299,7 +350,7 @@ def main():
         pickle.dump(metadata_store, f)
 
     print(f"\n[+] --- SCRIPT COMPLETE ---")
-    print(f"[*] Your new, expert database files ('{os.path.basename(FAISS_INDEX_PATH)}' and '{os.path.basename(METADATA_PATH)}') are ready.")
+    print(f"[*] Your new, expert database files are ready.")
 
 if __name__ == "__main__":
     main()

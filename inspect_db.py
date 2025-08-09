@@ -1,129 +1,131 @@
 import os
 import pickle
-import numpy as np
-import faiss
+import pandas as pd
+from collections import Counter
 
-# --- CONFIGURATION ---
+# --- Configuration ---
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-# These names must match the final collection names used in your process_data.py script
-# COLLECTION_NAME = "real_estate_finetuned_local"
-# FAISS_INDEX_PATH = os.path.join(SCRIPT_DIR, "finetuned_faiss_index.bin")
-# METADATA_PATH = os.path.join(SCRIPT_DIR, "real_estate_finetuned_local_metadata.pkl")
-FAISS_INDEX_PATH = os.path.join(SCRIPT_DIR, "real_estate_finetuned_local_faiss.bin")
-METADATA_PATH = os.path.join(SCRIPT_DIR, "real_estate_finetuned_local_metadata.pkl")
-
-def print_record_details(record_index, metadata, vector):
-    """Helper function to print the details of a single record in a formatted way."""
-    print("-" * 50)
-    print(f"Displaying Record at Index: {record_index}")
-    
-    print("\n--- METADATA ---")
-    if not metadata:
-        print("  [!] This record has NO METADATA.")
-    else:
-        for key, value in metadata.items():
-            # Truncate very long text for readability
-            if key == 'original_text' and isinstance(value, str) and len(value) > 250:
-                print(f"  - {key:<20}: '{value[:250].replace(chr(10), ' ')}...'")
-            else:
-                print(f"  - {key:<20}: {value}")
-
-    print("\n--- EMBEDDING ---")
-    if vector is not None and vector.size > 0:
-        print(f"  - Shape:               {vector.shape}")
-        print(f"  - Data Type:           {vector.dtype}")
-        # Show a snippet of the embedding vector
-        snippet = f"[{vector[0]:.4f}, {vector[1]:.4f}, ..., {vector[-2]:.4f}, {vector[-1]:.4f}]"
-        print(f"  - Vector Snippet:      {snippet}")
-    else:
-        print("  [!] Could not retrieve a valid vector for this index.")
-    
-    print("-" * 50)
-
+COLLECTION_NAME = "real_estate_finetuned_local"
+METADATA_PATH = os.path.join(SCRIPT_DIR, f"{COLLECTION_NAME}_metadata.pkl")
+FAISS_INDEX_PATH = os.path.join(SCRIPT_DIR, f"{COLLECTION_NAME}_faiss.bin")
 
 def inspect_database():
-    """Loads and inspects the FAISS index and metadata store to find examples of each file type."""
-    print(f"[*] Attempting to load database files for collection...")
+    """
+    Loads the processed database files and generates a comprehensive
+    report on its contents, including the head of the DataFrame to show its structure.
+    """
+    print("[*] Attempting to load database files...")
+    if not os.path.exists(METADATA_PATH) or not os.path.exists(FAISS_INDEX_PATH):
+        print(f"[!] FATAL: Database files not found. Please run 'process_data.py' first.")
+        return
+
+    with open(METADATA_PATH, "rb") as f:
+        metadata_store = pickle.load(f)
     
-    try:
-        faiss_index = faiss.read_index(FAISS_INDEX_PATH)
-        with open(METADATA_PATH, "rb") as f:
-            metadata_store = pickle.load(f)
-        print(f"[+] Successfully loaded FAISS index and metadata store.")
-    except FileNotFoundError:
-        print(f"\n[!] FATAL: Database files not found. Please run the final 'process_data.py' script first to create them.")
-        return
-    except Exception as e:
-        print(f"\n[!] FATAL: Could not load the database files. Error: {e}")
-        return
+    df = pd.DataFrame(metadata_store)
+    print(f"[+] Successfully loaded metadata store with {len(df)} total records.\n")
 
-    total_items = len(metadata_store)
-    if total_items == 0:
-        print("\n[!] The database is EMPTY.")
-        return
-        
-    print(f"\n[*] The database contains {total_items} total items (vectors).")
-    print("[*] Searching for one example of each major document type...")
-
-    # --- Find examples of each type (THE FIX: Added JSONL Email) ---
-    types_to_find = {
-        "JSONL Email": None,
-        "WhatsApp Chat": None,
-        "Email in PDF": None,
-        "Generic PDF": None,
-        "DOCX Document": None,
-        "Spreadsheet": None
-    }
-    
-    for i, metadata in enumerate(metadata_store):
-        # Stop searching if all types have been found
-        if all(v is not None for v in types_to_find.values()):
-            break
-            
-        source = metadata.get('source', '').lower()
-        filename = os.path.basename(source)
-        
-        # Check for JSONL emails first
-        if types_to_find["JSONL Email"] is None and source.endswith('.jsonl'):
-            types_to_find["JSONL Email"] = i
-            continue
-
-        if types_to_find["WhatsApp Chat"] is None and filename.startswith('whatsapp chat with'):
-            types_to_find["WhatsApp Chat"] = i
-            continue
-            
-        if types_to_find["Email in PDF"] is None and source.endswith('.pdf') and metadata.get('is_email'):
-            types_to_find["Email in PDF"] = i
-            continue
-
-        if types_to_find["Generic PDF"] is None and source.endswith('.pdf') and not metadata.get('is_email'):
-            types_to_find["Generic PDF"] = i
-            continue
-            
-        if types_to_find["DOCX Document"] is None and source.endswith('.docx'):
-            types_to_find["DOCX Document"] = i
-            continue
-
-        if types_to_find["Spreadsheet"] is None and (source.endswith('.xlsx') or source.endswith('.csv')):
-            types_to_find["Spreadsheet"] = i
-            continue
-
-    # --- Print the report ---
+    # --- Main Report ---
     print("\n" + "="*80)
     print("                  DATABASE INSPECTION REPORT")
     print("="*80)
 
-    for doc_type, record_index in types_to_find.items():
-        print(f"\n\n## Example for: {doc_type}")
-        if record_index is not None:
-            metadata = metadata_store[record_index]
-            # FAISS can reconstruct a vector from its index
-            vector = faiss_index.reconstruct(record_index)
-            print_record_details(record_index, metadata, vector)
-        else:
-            print("  - No example of this document type was found in the database.")
+    # --- NEW: SECTION 0 - DATAFRAME HEAD ---
+    # This section prints the first 5 rows to show all columns and the overall structure.
+    print("\n## 0. Metadata DataFrame Head (First 5 Rows)\n")
+    if not df.empty:
+        # Use to_string() to ensure all columns are displayed in the console
+        print(df.head().to_string())
+    else:
+        print("  - The metadata DataFrame is empty.")
+
+    # 1. File Type Distribution
+    print("\n\n## 1. File Type Distribution\n")
+    if 'file_type' in df.columns:
+        file_type_counts = df['file_type'].value_counts()
+        print(file_type_counts.to_string())
+    else:
+        print("  - 'file_type' column not found.")
+
+    # 2. Date Parsing Validation
+    print("\n\n## 2. Date Parsing Validation\n")
+    if 'parsed_date' in df.columns:
+        valid_dates = df['parsed_date'].notna().sum()
+        total_records = len(df)
+        success_rate = (valid_dates / total_records) * 100 if total_records > 0 else 0
+        print(f"  - Records with a valid 'parsed_date': {valid_dates} / {total_records} ({success_rate:.2f}%)")
+    else:
+        print("  - 'parsed_date' column not found.")
+
+    # 3. Special Report: PDF-Sourced Emails
+    print("\n\n## 3. Special Report: PDF-Sourced Emails\n")
+    if 'file_type' in df.columns and 'source' in df.columns:
+        pdf_email_mask = (df['file_type'] == 'email') & (df['source'].str.endswith('.pdf', na=False))
+        pdf_emails_df = df[pdf_email_mask]
+
+        if not pdf_emails_df.empty:
+            example = pdf_emails_df.iloc[0]
+            print("  - Found at least one PDF that was successfully identified as an email.")
+            print("  - Displaying the first example found:\n")
             
-    print("\n" + "="*80)
+            print("-" * 50)
+            print(f"### Example for: PDF-SOURCED EMAIL\n")
+            
+            print("--- METADATA (LLM EXTRACTED) ---")
+            print(f"  - source      : {example.get('source', 'N/A')}")
+            print(f"  - is_email    : {example.get('is_email', 'N/A')}")
+            print(f"  - from        : {example.get('from', 'N/A')}")
+            print(f"  - to          : {example.get('to', 'N/A')}")
+            print(f"  - subject     : {example.get('subject', 'N/A')}")
+            print(f"  - parsed_date : {example.get('parsed_date', 'N/A')}")
+            print(f"  - summary     : {example.get('summary', 'N/A')}")
+
+            print("\n--- TEXT CHUNK ---")
+            print(f"  - {example.get('original_text', 'N/A')[:200]}...")
+            print("-" * 50 + "\n")
+        else:
+            print("  - No PDFs were successfully identified as emails in the current database.")
+    else:
+        print("  - 'file_type' or 'source' column not found, cannot generate this report.")
+
+
+    # 4. General Examples by File Type
+    print("\n\n## 4. General Examples by File Type\n")
+    if 'file_type' in df.columns:
+        unique_types = [t for t in df['file_type'].unique() if t is not None]
+        
+        for f_type in unique_types:
+            example = df[df['file_type'] == f_type].iloc[0]
+            
+            print("-" * 50)
+            print(f"### Example for: {str(f_type).upper()}\n")
+            
+            print("--- METADATA ---")
+            if f_type == 'email' and not example['source'].endswith('.pdf'):
+                print(f"  - source      : {example.get('source', 'N/A')}")
+                print(f"  - id          : {example.get('id', 'N/A')}")
+                print(f"  - threadId    : {example.get('threadId', 'N/A')}")
+                print(f"  - from        : {example.get('from', 'N/A')}")
+                print(f"  - subject     : {example.get('subject', 'N/A')}")
+                print(f"  - parsed_date : {example.get('parsed_date', 'N/A')}")
+            elif f_type == 'whatsapp':
+                print(f"  - source      : {example.get('source', 'N/A')}")
+                print(f"  - sender      : {example.get('sender', 'N/A')}")
+                print(f"  - parsed_date : {example.get('parsed_date', 'N/A')}")
+            elif not (f_type == 'email' and example['source'].endswith('.pdf')):
+                print(f"  - source      : {example.get('source', 'N/A')}")
+                print(f"  - file_type   : {example.get('file_type', 'N/A')}")
+
+            print("\n--- TEXT CHUNK ---")
+            print(f"  - {example.get('original_text', 'N/A')[:200]}...")
+            print("-" * 50 + "\n")
+    else:
+        print("  - 'file_type' column not found, cannot generate examples.")
+
+    print("="*80)
+    print("                  END OF REPORT")
+    print("="*80)
+
 
 if __name__ == "__main__":
     inspect_database()
