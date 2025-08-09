@@ -83,30 +83,57 @@ class DataManager:
         self.metadata_keys = list(self.metadata_store[0].keys()) if self.metadata_store else []
         self.alias_resolver = AliasResolver(self)
         logging.info(f"[DataManager] Loaded {len(self.metadata_store)} vectors and a DataFrame with {len(self.df)} rows.")
-        self.conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+        # --- THIS IS THE FIX: No persistent connection. We only create the table once. ---
         self.create_history_table()
-        logging.info(f"[DataManager] Connected to SQLite database at {DB_PATH}")
+        logging.info(f"DataManager initialized. Using SQLite database at {DB_PATH}")
+
+    def _get_db_connection(self):
+        """Creates and returns a new database connection."""
+        return sqlite3.connect(DB_PATH, timeout=10) # Added timeout for resilience
+
     def create_history_table(self):
-        cursor = self.conn.cursor()
-        cursor.execute("""CREATE TABLE IF NOT EXISTS conversation_history (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP, query TEXT NOT NULL, response TEXT, feedback INTEGER DEFAULT 0, corrected_response TEXT)""")
-        self.conn.commit()
+        conn = None
+        try:
+            conn = self._get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute("""CREATE TABLE IF NOT EXISTS conversation_history (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP, query TEXT NOT NULL, response TEXT, feedback INTEGER DEFAULT 0, corrected_response TEXT)""")
+            conn.commit()
+        finally:
+            if conn:
+                conn.close()
     def log_interaction(self, session_id: str, query: str, response: str) -> int:
-        cursor = self.conn.cursor()
-        cursor.execute("INSERT INTO conversation_history (session_id, query, response) VALUES (?, ?, ?)", (session_id, query, response))
-        self.conn.commit()
-        return cursor.lastrowid
-    # --- THIS IS THE FIX ---
+        conn = None
+        try:
+            conn = self._get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute("INSERT INTO conversation_history (session_id, query, response) VALUES (?, ?, ?)", (session_id, query, response))
+            conn.commit()
+            return cursor.lastrowid
+        finally:
+            if conn:
+                conn.close()
     def update_feedback(self, record_id: int, feedback: int):
-        """Updates the feedback for a specific record."""
-        cursor = self.conn.cursor()
-        cursor.execute("UPDATE conversation_history SET feedback = ? WHERE id = ?", (feedback, record_id))
-        self.conn.commit()
-        logging.info(f"[DataManager] Updated feedback for record {record_id} to {feedback}")
+        conn = None
+        try:
+            conn = self._get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute("UPDATE conversation_history SET feedback = ? WHERE id = ?", (feedback, record_id))
+            conn.commit()
+            logging.info(f"[DataManager] Updated feedback for record {record_id} to {feedback}")
+        finally:
+            if conn:
+                conn.close()
     def get_recent_history(self, session_id: str, limit: int = 5) -> List[Dict]:
-        cursor = self.conn.cursor()
-        cursor.execute("SELECT query, response FROM conversation_history WHERE session_id = ? ORDER BY timestamp DESC LIMIT ?", (session_id, limit))
-        rows = cursor.fetchall()
-        return [{"query": q, "response": r} for q, r in reversed(rows)]
+        conn = None
+        try:
+            conn = self._get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT query, response FROM conversation_history WHERE session_id = ? ORDER BY timestamp DESC LIMIT ?", (session_id, limit))
+            rows = cursor.fetchall()
+            return [{"query": q, "response": r} for q, r in reversed(rows)]
+        finally:
+            if conn:
+                conn.close()
 
 # --- SPECIALIZED TOOLS ---
 
@@ -293,19 +320,54 @@ class HistorySearchAgent:
     def __init__(self, data_manager: DataManager, llm):
         self.dm = data_manager
         self.llm = llm
+    def _get_db_connection(self):
+        """Creates and returns a new database connection for this tool."""
+        return sqlite3.connect(DB_PATH, timeout=10)
     def _build_history_vectorstore(self):
-        cursor = self.dm.conn.cursor()
-        cursor.execute("SELECT id, query, response FROM conversation_history")
-        rows = cursor.fetchall()
-        if not rows: return None
+        """Builds a temporary FAISS index from the conversation history."""
+        conn = None
+        try:
+            conn = self._get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT id, query, response FROM conversation_history")
+            rows = cursor.fetchall()
+        finally:
+            if conn:
+                conn.close()
+        
+        if not rows:
+            return None
+        
         history_docs = [Document(page_content=f"User asked: {q}\nAgent responded: {r}", metadata={"id": id}) for id, q, r in rows]
         return FAISS.from_documents(history_docs, self.dm.embedding_model)
     def run(self, query: str) -> str:
         logging.info(f"[HistorySearchAgent] Searching conversation history for: '{query}'")
         vectorstore = self._build_history_vectorstore()
-        if not vectorstore: return "No conversation history has been recorded yet."
+        if not vectorstore:
+            return "No conversation history has been recorded yet."
+        
+        # For a simple query like "show me my recent prompts", a direct DB query is better.
+        if "recent prompts" in query.lower() or "recent questions" in query.lower():
+            conn = None
+            try:
+                conn = self._get_db_connection()
+                cursor = conn.cursor()
+                # Assuming a fixed session_id for CLI, but this would need to be passed for a real app
+                cursor.execute("SELECT query FROM conversation_history ORDER BY timestamp DESC LIMIT 5")
+                rows = cursor.fetchall()
+                if not rows:
+                    return "No recent prompts found in the history."
+                
+                formatted_prompts = "\n".join([f"{i+1}. {row[0]}" for i, row in enumerate(rows)])
+                return f"Here are your 5 most recent prompts:\n{formatted_prompts}"
+            finally:
+                if conn:
+                    conn.close()
+
+        # For semantic search on history, use the vectorstore
         results = vectorstore.similarity_search(query, k=5)
-        if not results: return "I couldn't find any relevant past conversations."
+        if not results:
+            return "I couldn't find any relevant past conversations."
         context = "\n---\n".join([f"Past Conversation (ID {doc.metadata['id']}):\n{doc.page_content}" for doc in results])
         return f"Found relevant past conversations:\n{context}"
 
