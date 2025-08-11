@@ -13,6 +13,8 @@ from datetime import datetime, timedelta
 import warnings
 import sqlite3
 from typing import List, Dict, Any
+import threading
+
 
 # --- LangChain Imports ---
 from langchain_openai import ChatOpenAI
@@ -136,7 +138,6 @@ class DataManager:
                 conn.close()
 
 # --- SPECIALIZED TOOLS ---
-
 class RAGSearchTool:
     """The advanced RAG tool for qualitative searches on document content."""
     def __init__(self, data_manager: DataManager):
@@ -464,16 +465,25 @@ You are a master AI assistant for the '2getherments' real estate company. Your j
 
 **YOUR PROCESS (CRITICAL):**
 1.  **Analyze the user's request.** Pay close attention to the **CONVERSATION HISTORY**. If the new input is a follow-up question (e.g., "what about...", "and for that project?"), you MUST use the context from the history to understand the full query.
-2.  **Internal Search First:** Always start by using `QualitativeFactFinder` or `QuantitativeDataAnalyzer` to search the internal documents.
-3.  **Review:** Look at the observation from the tool.
-4.  **RECOVERY & RETRY:** If one internal tool fails (e.g., `QualitativeFactFinder` finds nothing), you MUST try the *other* internal tool (`QuantitativeDataAnalyzer`) if it's relevant.
-5.  **EXTERNAL SEARCH (LAST RESORT):** If, and only if, both internal search tools fail to find a relevant answer, use the `WebSearch` tool to look for public information.
-6.  **DELIVER THE FINAL ANSWER:** After you have gathered all the information you need (from internal tools or the web), you MUST conclude your work. To do this, you MUST use the `Final Answer:` format. Do not simply state the answer in plain text. Your final turn must be structured like this:
+2.  **Choose the Right Tool:**
+    - For questions about "how many", "count", "list", or finding the **"latest"**, **"earliest"**, or **"last"** item, you MUST use the `QuantitativeDataAnalyzer`.
+    - For questions about "what is", "summarize", or "sentiment", use the `QualitativeFactFinder`.
+3.  **Internal Search First:** Always start by using `QualitativeFactFinder` or `QuantitativeDataAnalyzer` to search the internal documents.
+4.  **Review:** Look at the observation from the tool.
+5.  **RECOVERY & RETRY:** If one internal tool fails (e.g., `QualitativeFactFinder` finds nothing), you MUST try the *other* internal tool (`QuantitativeDataAnalyzer`) if it's relevant.
+6.  **EXTERNAL SEARCH (LAST RESORT):** If, and only if, both internal search tools fail to find a relevant answer, use the `WebSearch` tool to look for public information.
+7.  **DELIVER THE FINAL ANSWER:** After you have gathered all the information you need (from internal tools or the web), you MUST conclude your work. To do this, you MUST use the `Final Answer:` format. Do not simply state the answer in plain text. Your final turn must be structured like this:
     Thought: I have all the information required to answer the user's question. I will now provide the final answer.
     Final Answer: [The complete, synthesized answer for the user.]
-7.  **CONCLUDING WHEN INFORMATION IS NOT FOUND:** If you have used all relevant tools and still cannot find the answer, you MUST conclude by using the `Final Answer:` format to inform the user that the information is not available.
+8.  **CONCLUDING WHEN INFORMATION IS NOT FOUND:** If you have used all relevant tools and still cannot find the answer, you MUST conclude by using the `Final Answer:` format to inform the user that the information is not available.
     Thought: I have exhausted all my tools and cannot find the requested information. I will now inform the user.
     Final Answer: I could not find any information regarding [the user's query] in the available documents or through a web search.
+
+**Example of a "Latest" Query:**
+User Input: "What was the last email from Sankar?"
+Thought: The user is asking for the "last" email. This is a chronological sorting task on metadata. I MUST use the `QuantitativeDataAnalyzer`.
+Action: QuantitativeDataAnalyzer
+Action Input: "Find the latest email from Sankar, and show its summary and date."
 
 **Example of using CONVERSATION HISTORY:**
 User: "how many emails did we receive in august 2024?"
