@@ -58,7 +58,13 @@ class AliasResolver:
         direct_matches = [name for name in self.all_known_names if alias_lower in name.lower()]
         if direct_matches: return [m.lower() for m in direct_matches]
         logging.info(f"[AliasResolver] No direct match for '{alias}'. Using LLM to resolve.")
-        prompt = ChatPromptTemplate.from_template("You are an entity resolution expert...") # Unchanged
+        prompt = ChatPromptTemplate.from_template(
+            "You are an entity resolution expert. Given a user's mention of a name or alias, find all possible full names from the provided list that are a plausible match.\n"
+            "Respond with a JSON list of the matching full names. If no matches are found, respond with an empty list.\n\n"
+            "User's Mention: '{alias}'\n\n"
+            "List of Known Full Names:\n{name_list}\n\n"
+            "JSON List of Matches:"
+        )
         resolver_chain = prompt | ChatOpenAI(model="gpt-4o-mini", temperature=0) | json.loads
         try:
             resolved_names = resolver_chain.invoke({"alias": alias, "name_list": "\n".join(self.all_known_names)})
@@ -163,7 +169,7 @@ class RAGSearchTool:
         -   User Query: "what is the sentiment of 2g tula customers from jan 2025 to july 2025 in emails?"
             Your JSON: {{"semantic_query": "sentiment of 2g tula customers", "metadata_filter": {{"file_type": "mail", "parsed_date": {{"$gte": "2025-01-01", "$lte": "2025-07-31"}}}}}}
         -   User Query: "what is the sentiment of 2gtula whatsapp chat from jan 2025 to june 2025?"
-            Your JSON: {{"semantic_query": "sentiment analysis of 2gtula WhatsApp chat", "metadata_filter": {{"file_type": "2gtula whatsapp", "parsed_date": {{"$gte": "2025-01-01", "$lte": "2025-06-30"}}}}}}
+            Your JSON: {{"semantic_query": "sentiment analysis of 2gtula WhatsApp chat", "metadata_filter": {{"file_type": "whatsapp", "parsed_date": {{"$gte": "2025-01-01", "$lte": "2025-06-30"}}}}}}
         -   User Query: "Find emails from customer communications this week"
             Your JSON:
                         {{
@@ -534,7 +540,7 @@ Thought: ...
 Action: The action to take, should be one of [{tool_names}]
 Action Input: The input to the action
 Observation: The result of the action
-... (this Thought/Action/Action Input/Observation can repeat N times)
+... (this Thought/Action/Action Input/Observation can repeat N times if and only if the context is updated, without getting stuck in a loop)
 Thought: I now have the final answer
 Final Answer: ...
 Begin!
