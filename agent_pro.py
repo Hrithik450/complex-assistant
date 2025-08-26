@@ -14,7 +14,7 @@ import warnings
 import sqlite3
 from typing import List, Dict, Any
 import threading
-import libsql_client as libsql
+import libsql
 import streamlit as st
 
 
