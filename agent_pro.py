@@ -14,6 +14,8 @@ import warnings
 import sqlite3
 from typing import List, Dict, Any
 import threading
+import libsql_client as libsql
+import streamlit as st
 
 
 # --- LangChain Imports ---
@@ -88,6 +90,16 @@ class DataManager:
         if 'parsed_date' in self.df.columns:
             self.df['parsed_date'] = pd.to_datetime(self.df['parsed_date'], errors='coerce')
 
+        self.db_lock = threading.Lock()
+        
+        # --- THIS IS THE FIX: Turso Integration ---
+        self.is_cloud_db = False
+        if "TURSO_DB_URL" in st.secrets and "TURSO_AUTH_TOKEN" in st.secrets:
+            self.is_cloud_db = True
+            self.turso_url = st.secrets["TURSO_DB_URL"]
+            self.turso_token = st.secrets["TURSO_AUTH_TOKEN"]
+            logging.info("Detected Streamlit Cloud. Using Turso for persistent history.")
+
         self.metadata_keys = list(self.metadata_store[0].keys()) if self.metadata_store else []
         self.alias_resolver = AliasResolver(self)
         logging.info(f"[DataManager] Loaded {len(self.metadata_store)} vectors and a DataFrame with {len(self.df)} rows.")
@@ -96,8 +108,10 @@ class DataManager:
         logging.info(f"DataManager initialized. Using SQLite database at {DB_PATH}")
 
     def _get_db_connection(self):
-        """Creates and returns a new database connection."""
-        return sqlite3.connect(DB_PATH, timeout=10) # Added timeout for resilience
+        if self.is_cloud_db:
+            return libsql.connect(database=self.turso_url, auth_token=self.turso_token)
+        else:
+            return sqlite3.connect(DB_PATH, timeout=10)
 
     def create_history_table(self):
         conn = None
@@ -438,7 +452,7 @@ class ManagerAgent:
 
         self.tools = [
             Tool(name="QuantitativeDataAnalyzer", func=pandas_tool.run, description="Use for quantitative questions about METADATA (how many, list, count, sort). CANNOT read document content."),
-            Tool(name="QualitativeFactFinder", func=rag_tool.run, description="Use for qualitative questions that require reading document CONTENT (what is, summarize, sentiment)."),
+            Tool(name="QualitativeFactFinder", func=rag_tool.run, description="Use for qualitative questions that require reading document CONTENT (what is, summarize, sentiment). This tool's job is to retrieve raw text."),
             Tool(name="ConversationHistorySearch", func=history_agent.run, description="Use to search past conversations (e.g., 'what did you tell me yesterday...')."),
             # --- SOLUTION 2: Add the new tool to the list ---
             Tool(name="WebSearch", func=web_search_tool.invoke, description="Use this as a LAST RESORT if the information is not found in internal documents. Good for public information about companies or people."),
@@ -448,7 +462,7 @@ class ManagerAgent:
         
         manager_prompt_template = """
 You are a master AI assistant for the '2getherments' real estate company. Your job is to use the tools at your disposal to answer the user's question.
-
+Today's date is {{current_date}}. Use this for any relative date calculations (e.g., "last year").
 **CORE KNOWLEDGE & INTERNAL BRIEFING (Your Brain):**
 ---
 {briefing_context}
@@ -469,23 +483,42 @@ You are a master AI assistant for the '2getherments' real estate company. Your j
 **YOUR TOOLS:**
 {tools}
 
-**YOUR PROCESS (CRITICAL):**
+**--- AGENT CONSTITUTION (CRITICAL RULES) ---**
 1.  **Analyze the user's request.** Pay close attention to the **CONVERSATION HISTORY**. If the new input is a follow-up question (e.g., "what about...", "and for that project?"), you MUST use the context from the history to understand the full query.
 2.  **Choose the Right Tool:**
     - For questions about "how many", "count", "list", or finding the **"latest"**, **"earliest"**, or **"last"** item, you MUST use the `QuantitativeDataAnalyzer`.
     - For questions about "what is", "summarize", or "sentiment", use the `QualitativeFactFinder`.
-3.  **Multi-Step Reasoning:** For complex queries like "summarize the last email from X", you must chain your tools. First find the email, then summarize it.
-4.  **Internal Search First:** Always start by using `QualitativeFactFinder` or `QuantitativeDataAnalyzer` to search the internal documents.
-5.  **Review:** Look at the observation from the tool.
+3.  **MULTI-STEP REASONING:** For complex queries, you must chain your thoughts. If you retrieve messy data, your next thought should be to synthesize it into a clean answer.
+4.  **INTERNAL FIRST, WEB LAST:** Always try to answer using internal tools first. Only use `WebSearch` if you find nothing.
+5.  **BE THOROUGH:** If you retrieve a list of items (like flats pending painting), your final answer must include the full list, not just a statement that you found it.
 6.  **RECOVERY & RETRY:** If one internal tool fails (e.g., `QualitativeFactFinder` finds nothing), you MUST try the *other* internal tool (`QuantitativeDataAnalyzer`) if it's relevant.
-7.  **EXTERNAL SEARCH (LAST RESORT):** If, and only if, both internal search tools fail to find a relevant answer, use the `WebSearch` tool to look for public information.
-8.  **DELIVER THE FINAL ANSWER:** After you have gathered all the information you need (from internal tools or the web), you MUST conclude your work. To do this, you MUST use the `Final Answer:` format. Do not simply state the answer in plain text. Your final turn must be structured like this:
+7.  **DELIVER THE FINAL ANSWER:** After you have gathered all the information you need (from internal tools or the web), you MUST conclude your work. To do this, you MUST use the `Final Answer:` format. Do not simply state the answer in plain text. Your final turn must be structured like this:
     Thought: I have all the information required to answer the user's question. I will now provide the final answer.
     Final Answer: [The complete, synthesized answer for the user.]
-9.  **CONCLUDING WHEN INFORMATION IS NOT FOUND:** If you have used all relevant tools and still cannot find the answer, you MUST conclude by using the `Final Answer:` format to inform the user that the information is not available.
+8.  **CONCLUDING WHEN INFORMATION IS NOT FOUND:** If you have used all relevant tools and still cannot find the answer, you MUST conclude by using the `Final Answer:` format to inform the user that the information is not available.
     Thought: I have exhausted all my tools and cannot find the requested information. I will now inform the user.
     Final Answer: I could not find any information regarding [the user's query] in the available documents or through a web search.
 
+**--- EXAMPLES OF CORRECT REASONING ---**
+
+        **Example 1: "Find and Summarize"**
+        New input: "Summarize the last email from Raja."
+        Thought: The user wants the "last" email (a sorting task) and a "summary" (a content task). This is a two-step process. First, I must find the latest email using the QuantitativeDataAnalyzer and get its content.
+        Action: QuantitativeDataAnalyzer
+        Action Input: "Find the latest email from Raja. Return its 'original_text' and 'parsed_date'."
+        Observation: A pandas DataFrame is returned showing the original_text and parsed_date of the latest email.
+        Thought: I have successfully found the content and date of the latest email. Now I need to summarize this content for the user. I will use the `QualitativeFactFinder` for its summarization ability, but I will provide the text directly in the prompt to the LLM in my final thought.
+        Final Answer: The last email from Raja was on [date from observation]. The summary is: [LLM summary of the 'original_text' from the observation].
+
+        **Example 2: "Retrieve and Synthesize" (to avoid loops)**
+        New input: "What are all flats left pending for Paint coat 2?"
+        Thought: The user is asking for a list of flats with a specific status. This is a qualitative question. I will use the QualitativeFactFinder to find all mentions of this status.
+        Action: QualitativeFactFinder
+        Action Input: "flats left pending for Paint coat 2"
+        Observation: [A messy blob of text is returned, containing mentions of flats 815, 205, 604, and 615.]
+        Thought: I have found several text chunks that mention the flats pending for the second coat of paint. I will now synthesize this information into a clean list for the user.
+        Final Answer: The flats left pending for Paint coat 2 are: 815, 205, 604, and 615.
+    
 **Example of a "Latest" Query:**
 User Input: "What was the last email from Sankar?"
 Thought: The user is asking for the "last" email. This is a chronological sorting task on metadata. I MUST use the `QuantitativeDataAnalyzer`.
@@ -555,15 +588,24 @@ Begin!
             tools=self.tools,
             verbose=True,
             # This provides a specific instruction to the agent if it messes up the format.
-            handle_parsing_errors="Check your output and make sure it conforms to the required format: `Thought: ...\nAction: ...\nAction Input: ...` or `Thought: ...\nFinal Answer: ...`",
-            max_iterations=7
+            handle_parsing_errors=True,
+            max_iterations=10
         )
 
     def run(self, user_query: str, session_id: str):
         recent_history = self.data_manager.get_recent_history(session_id)
         chat_history_str = "\n".join([f"User: {h['query']}\nAssistant: {h['response']}" for h in recent_history])
-        result = self.agent_executor.invoke({"input": user_query, "chat_history": chat_history_str})
-        response = result.get('output', 'Agent did not return a final answer.')
+        # --- THIS IS THE FIX: Inject the current date into the prompt ---
+        current_date_str = datetime.now().strftime('%Y-%m-%d')
+        
+        input_payload = {
+            "input": user_query,
+            "chat_history": chat_history_str,
+            "current_date": current_date_str
+        }
+        
+        result = self.agent_executor.invoke(input_payload)
+        response = result.get('output', 'Agent stopped due to an unexpected error.')
         record_id = self.data_manager.log_interaction(session_id, user_query, response)
         return response, record_id
 
@@ -580,6 +622,9 @@ if __name__ == "__main__":
             print("Ask a complex question (or type 'exit' to quit).")
             while True:
                 user_input = input("> ")
+                if not user_input or user_input.isspace():
+                    print("Please enter a question.")
+                    continue
                 if user_input.lower() == 'exit': break
                 response, record_id = manager_agent.run(user_query=user_input, session_id=session_id)
                 print("\n" + "="*50 + " FINAL ANSWER " + "="*50)
