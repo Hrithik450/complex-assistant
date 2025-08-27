@@ -462,7 +462,7 @@ class ManagerAgent:
         
         manager_prompt_template = """
 You are a master AI assistant for the '2getherments' real estate company. Your job is to use the tools at your disposal to answer the user's question.
-Today's date is {{current_date}}. Use this for any relative date calculations (e.g., "last year").
+Today's date is {current_date}. Use this for any relative date calculations (e.g., "last year").
 **CORE KNOWLEDGE & INTERNAL BRIEFING (Your Brain):**
 ---
 {briefing_context}

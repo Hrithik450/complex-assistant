@@ -7,22 +7,22 @@ import zipfile
 from dotenv import load_dotenv
 
 # --- Add the current directory to the Python path ---
-# This ensures that the app can find the agent_pro module
+# This ensures that the app can find your agent modules
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(SCRIPT_DIR)
 
-# --- Import the final, robust agent ---
-from agent_pro import ManagerAgent
+# --- THIS IS THE CHANGE: Import the new, specialized agent ---
+from agent_email_specialist import EmailSpecialistAgent
 
 # --- Page Configuration ---
 st.set_page_config(
-    page_title="AI Business Analyst (Advanced ReAct)",
-    page_icon="🤖",
+    page_title="AI Email Analyst",
+    page_icon="📧",
     layout="wide"
 )
 
-st.title("🤖 AI Business Analyst")
-st.caption("An intelligent agent that learns from your feedback.")
+st.title("📧 AI Email Analyst")
+st.caption("An intelligent agent that specializes in answering questions about your emails.")
 
 # --- File Downloader & Provisioning ---
 def provision_files():
@@ -30,8 +30,9 @@ def provision_files():
     Checks for necessary model and data files and downloads them from Google Drive if missing.
     This is the single source of truth for setting up the app's environment on Streamlit Cloud.
     """
-    faiss_path = os.path.join(SCRIPT_DIR, "real_estate_finetuned_local_faiss.bin")
-    metadata_path = os.path.join(SCRIPT_DIR, "real_estate_finetuned_local_metadata.pkl")
+    # --- THIS IS THE CHANGE: Point to the new email-specific files ---
+    faiss_path = os.path.join(SCRIPT_DIR, "emails_faiss.bin")
+    metadata_path = os.path.join(SCRIPT_DIR, "emails_metadata.pkl")
     model_path = os.path.join(SCRIPT_DIR, "finetuned_bge_real_estate_model")
     model_zip_path = os.path.join(SCRIPT_DIR, "finetuned_model.zip")
 
@@ -42,20 +43,20 @@ def provision_files():
     st.info("Downloading required model and data files. This may take a moment on first startup...")
     try:
         # Get File IDs from Streamlit secrets
-        faiss_id = st.secrets["GDRIVE_FAISS_FILE_ID"]
-        metadata_id = st.secrets["GDRIVE_METADATA_FILE_ID"]
-        model_zip_id = st.secrets["GDRIVE_MODEL_ZIP_FILE_ID"]
+        faiss_id = st.secrets["GDRIVE_EMAIL_FAISS_ID"]
+        metadata_id = st.secrets["GDRIVE_EMAIL_METADATA_ID"]
+        model_zip_id = st.secrets["GDRIVE_MODEL_ZIP_ID"]
 
         # Download files using gdown, only if they don't already exist
         if not os.path.exists(faiss_path):
-            with st.spinner("Downloading FAISS index (vector store)..."):
+            with st.spinner("Downloading Email FAISS index..."):
                 gdown.download(id=faiss_id, output=faiss_path, quiet=True)
-            st.success("FAISS index downloaded.")
+            st.success("Email FAISS index downloaded.")
 
         if not os.path.exists(metadata_path):
-            with st.spinner("Downloading metadata store..."):
+            with st.spinner("Downloading Email metadata store..."):
                 gdown.download(id=metadata_id, output=metadata_path, quiet=True)
-            st.success("Metadata downloaded.")
+            st.success("Email metadata downloaded.")
 
         if not os.path.isdir(model_path):
             with st.spinner("Downloading fine-tuned model..."):
@@ -67,7 +68,6 @@ def provision_files():
                     zip_ref.extractall(SCRIPT_DIR)
             st.success("Model unzipped successfully.")
             
-            # Clean up the downloaded zip file
             os.remove(model_zip_path)
         
         st.success("All required files are ready!")
@@ -79,7 +79,7 @@ def provision_files():
 @st.cache_resource
 def initialize_system():
     """
-    Initializes the ManagerAgent. This runs only once per session.
+    Initializes the EmailSpecialistAgent. This runs only once per session.
     """
     load_dotenv()
     
@@ -94,8 +94,9 @@ def initialize_system():
         st.stop()
         
     try:
-        with st.spinner("Initializing AI Analyst and connecting to knowledge base..."):
-            agent = ManagerAgent()
+        with st.spinner("Initializing AI Email Analyst..."):
+            # --- THIS IS THE CHANGE: Instantiate the new agent ---
+            agent = EmailSpecialistAgent()
         return agent
     except Exception as e:
         st.error(f"A critical error occurred during agent initialization: {e}")
@@ -105,7 +106,7 @@ def initialize_system():
 
 # Initialize the agent system
 manager_agent = initialize_system()
-st.success("AI Analyst is ready.", icon="✅")
+st.success("AI Email Analyst is ready.", icon="✅")
 
 # --- Session State Management and UI ---
 if "session_id" not in st.session_state:
@@ -152,14 +153,14 @@ for message in st.session_state.messages:
                 st.button("Submit Correction", key=f"submit_{record_id}", on_click=handle_correction, args=(record_id,))
 
 # Main chat input logic
-if prompt := st.chat_input("Ask a complex question or provide a correction..."):
+if prompt := st.chat_input("Ask a question about your emails..."):
     if prompt and not prompt.isspace():
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
             st.markdown(prompt)
 
         with st.chat_message("assistant"):
-            with st.spinner("The AI team is thinking..."):
+            with st.spinner("The AI Email Analyst is thinking..."):
                 response, record_id = manager_agent.run(
                     user_query=prompt, 
                     session_id=st.session_state.session_id

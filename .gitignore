@@ -13,6 +13,8 @@ analyze_data.py
 real_estate_finetuned_local_metadata.pkl
 real_estate_finetuned_local_faiss.bin
 real_estate_training_dataset.jsonl
+emails_faiss.bin
+emails_metadata.pkl
 
 __pycache__/
 *.pyc

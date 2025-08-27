@@ -26,3 +26,4 @@ tavily-python
 libsql
 libsql-client
 tenacity
+aiohttp

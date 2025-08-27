@@ -6,8 +6,13 @@ from collections import Counter
 # --- Configuration ---
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 COLLECTION_NAME = "real_estate_finetuned_local"
-METADATA_PATH = os.path.join(SCRIPT_DIR, f"{COLLECTION_NAME}_metadata.pkl")
-FAISS_INDEX_PATH = os.path.join(SCRIPT_DIR, f"{COLLECTION_NAME}_faiss.bin")
+# METADATA_PATH = os.path.join(SCRIPT_DIR, f"{COLLECTION_NAME}_metadata.pkl")
+# FAISS_INDEX_PATH = os.path.join(SCRIPT_DIR, f"{COLLECTION_NAME}_faiss.bin")
+
+METADATA_PATH = os.path.join(SCRIPT_DIR, "emails_metadata.pkl")
+FAISS_INDEX_PATH = os.path.join(SCRIPT_DIR, "emails_faiss.bin")
+
+
 
 def inspect_database():
     """
