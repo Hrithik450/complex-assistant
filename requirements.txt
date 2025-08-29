@@ -29,3 +29,4 @@ libsql-client
 tenacity
 aiohttp
 rich
+psycopg2
