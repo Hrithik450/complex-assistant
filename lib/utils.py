@@ -1,8 +1,9 @@
 import os
 
 BASE_DIR = os.path.dirname(__file__)  # current file directory
-FAISS_INDEX_PATH = os.path.join(BASE_DIR, "data", "emails_faiss_oaite.bin")
-METADATA_PATH = os.path.join(BASE_DIR, "data", "emails_metadata_oaite.pkl")
+FAISS_INDEX_PATH = os.path.join(BASE_DIR, "data", "emails_faiss_oaite_300.bin")
+EMAIL_JSON_PATH = os.path.join(BASE_DIR, "data", "full_mails.jsonl")
+PICKLE_FILE_PATH = os.path.join(BASE_DIR, "data", "optimized_chunks.pkl")
 EMBEDDING_MODEL_NAME = "text-embedding-3-large"
 AGENT_MODEL = "gpt-4o-mini" # Or another powerful model like "gpt-4-turbo"
 
@@ -29,5 +30,8 @@ Tone:
     - "Unfortunately, I couldn’t find exactly what you asked for, but here’s what I can share:"
     - "Happy to help! Here’s the information from your emails:"
 
+Date & Time formatting:
+- Always ensure the information is up-to-date.
+- Convert the natural user query date expressions into a standard date format expression (like example:- "2024", "january 2024", "yesterday", "last 7 days", "last month", "today").   
 Today’s date is {today_date} IST.
 """

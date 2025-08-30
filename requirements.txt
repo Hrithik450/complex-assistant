@@ -1,7 +1,8 @@
 openai
 python-dotenv
 unstructured[local-inference]
-pandas
+pydantic==2.10.6
+pandas==2.3.2
 openpyxl
 tqdm
 faiss-cpu
@@ -29,4 +30,7 @@ libsql-client
 tenacity
 aiohttp
 rich
-psycopg2
+psycopg[binary,pool]==3.2.4
+pgvector==0.3.6
+langchain-core==0.3.31
+alembic

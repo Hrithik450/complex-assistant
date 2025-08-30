@@ -1,30 +1,13 @@
-import uuid
-from sqlalchemy import Column, String, Text, TIMESTAMP, ForeignKey, Integer, func
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import Column, String, Text, BigInteger
 from sqlalchemy.ext.declarative import declarative_base
+from pgvector.sqlalchemy import Vector
 
 Base = declarative_base()
 
-class User(Base):
-    __tablename__ = "user"
-
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_name = Column(String(255), nullable=False)
-    created_at = Column(TIMESTAMP, server_default=func.now())
-
 class Thread(Base):
-    __tablename__ = "threads"
+    __tablename__ = "thread"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id = Column(UUID(as_uuid=True), ForeignKey("user.id"))
-    thread_name = Column(String(255), nullable=False)
-    created_at = Column(TIMESTAMP, server_default=func.now())
-
-class ThreadMessage(Base):
-    __tablename__ = "thread_messages"
-
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    thread_id = Column(UUID(as_uuid=True), ForeignKey("threads.id"))
-    role = Column(Text, nullable=False)  # 'system', 'user', 'assistant'
-    content = Column(Text, nullable=False)
-    created_at = Column(TIMESTAMP, server_default=func.now())
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    role = Column(String(10), nullable=False)
+    message = Column(Text, nullable=False)
+    embedding_vector = Column(Vector(3072))

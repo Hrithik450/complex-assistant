@@ -1,13 +1,13 @@
 import pandas as pd
-import pickle
-from lib.utils import METADATA_PATH
+from lib.utils import EMAIL_JSON_PATH
 
-print("Loading metadata...")
-with open(METADATA_PATH, "rb") as f:
-    metadata_store = pickle.load(f)
+print("Loading email data-set...")
+print(pd.__version__)
+df_list = []
+chunks = pd.read_json(EMAIL_JSON_PATH, chunksize=5000, lines=True)
+for chunk in chunks:
+    df_list.append(chunk)
 
-# Create a Pandas DataFrame for efficient filtering
-df = pd.DataFrame(metadata_store)
-# Convert date column to datetime objects for proper filtering
-df['date'] = pd.to_datetime(df['date'])
+df = pd.concat(df_list)
+df["date"] = pd.to_datetime(df["date"], utc=True, errors='coerce')
 print(f"Successfully loaded {len(df)} records.")

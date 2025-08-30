@@ -12,9 +12,9 @@ def conversation_retriever_tool(threadId: str) -> str:
     Returns:
         str: Full conversation history including metadata and email content.
     """
-    print('conversation_retriever_tool is being called')
-    thread_df = df[df['threadId'] == threadId].sort_values(by='date')
-
+    print(f"conversation_retriever_tool is being called {threadId}")
+    thread_df = df[df['threadId'] == threadId]
+    
     if thread_df.empty:
         return f"No conversation found with threadId '{threadId}'."
 
@@ -22,9 +22,13 @@ def conversation_retriever_tool(threadId: str) -> str:
         f"threadId: {row['threadId']}\n"
         f"From: {row['from']}\n"
         f"To: {row['to']}\n"
+        f"CC: {row['cc']}\n"
         f"Subject: {row['subject']}\n"
-        f"Date: {row['date'].strftime('%Y-%m-%d %H:%M')}\n\n"
-        f"{row['original_text']}"
+        f"Date: {row['date']}\n\n"
+        f"Snippet: {row['snippet']}\n\n"
+        f"Body:\n{row['body']}\n\n"
+        f"Labels: {row['labels']}\n"
+        f"Attachments: {row['attachments']}\n"
         for _, row in thread_df.iterrows()
     ])
 

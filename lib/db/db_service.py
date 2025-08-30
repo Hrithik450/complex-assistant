@@ -5,8 +5,7 @@ class ThreadService(BaseCheckpointSaver):
     def __init__(self, connection):
         self.conn = connection
 
-    def get_tuple(self, config):
-        thread_id = config.get("configurable", {}).get("thread_id")
+    def get_tuple(self, thread_id):
         cursor = self.conn.cursor()
         cursor.execute("""
             SELECT role, content FROM thread_messages
@@ -14,13 +13,9 @@ class ThreadService(BaseCheckpointSaver):
         """, (thread_id,))
         rows = cursor.fetchall()
         messages = [{"role": r['role'], "content": r['content']} for r in rows]
-        return Checkpoint(
-        checkpoint={"messages": messages},
-        metadata={"thread_id": thread_id}
-        )
+        return {"messages": messages}
     
-    def put_tuple(self, config, state):
-        thread_id = config.get("configurable", {}).get("thread_id")
+    def put_tuple(self, thread_id, state):
         messages = state["messages"]
         cursor = self.conn.cursor()
         for msg in messages:
