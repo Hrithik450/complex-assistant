@@ -15,7 +15,7 @@ def semantic_search_tool(query: str) -> str:
     Returns:
         str: Top 5 most similar email chunks with metadata (threadId, sender, subject, date).
     """
-    print('semantic_search_tool is being called')
+    print(f'semantic_search_tool is being called with {query}')
     query_embedding = np.array(embeddings.embed_query(query)).astype('float32').reshape(1, -1)
     
     # Search the FAISS index for the top 5 most similar chunks

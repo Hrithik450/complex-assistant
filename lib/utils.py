@@ -1,7 +1,7 @@
 import os
 
 BASE_DIR = os.path.dirname(__file__)  # current file directory
-FAISS_INDEX_PATH = os.path.join(BASE_DIR, "data", "emails_faiss_oaite_300.bin")
+VECTOR_DATA_PATH = os.path.join(BASE_DIR, "data", "emails_faiss_oaite_2.35G.bin")
 EMAIL_JSON_PATH = os.path.join(BASE_DIR, "data", "full_mails.jsonl")
 PICKLE_FILE_PATH = os.path.join(BASE_DIR, "data", "optimized_chunks.pkl")
 EMBEDDING_MODEL_NAME = "text-embedding-3-large"
