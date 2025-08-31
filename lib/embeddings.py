@@ -1,4 +1,4 @@
-from langchain_openai import  OpenAIEmbeddings
+from langchain_openai import OpenAIEmbeddings
 from lib.utils import EMBEDDING_MODEL_NAME
 from dotenv import load_dotenv
 import os
