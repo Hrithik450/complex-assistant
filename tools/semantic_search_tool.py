@@ -20,7 +20,7 @@ def semantic_search_tool(query: str) -> str:
         query (str): The natural language query.
 
     Returns:
-        str: Top 20 most similar email chunks with metadata (sender, subject, date).
+        str: Top 5 most similar email chunks with metadata (sender, subject, date).
     """
     print(f'semantic_search_tool is being called with {query}')
 
@@ -35,7 +35,7 @@ def semantic_search_tool(query: str) -> str:
     search_results = chroma_collection.query(
         # query_texts=[query],
         query_embeddings=[query_embedding],
-        n_results=20
+        n_results=5
     )
     
     # Extract the string IDs and convert them to integer indices for DataFrame lookup
