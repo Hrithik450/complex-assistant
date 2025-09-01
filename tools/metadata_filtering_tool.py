@@ -54,13 +54,13 @@ def match_value_in_columns(value, column_value):
     # Case 1: column_value is a list
     if isinstance(column_value, list):
         for e in column_value:
-            if value in e or fuzz.partial_ratio(value.lower(), e.lower()) > 60:
+            if value in e or fuzz.partial_ratio(value.lower(), e.lower()) > 85:
                 return True
         return False
 
     # Case 2: column_value is a string
     if isinstance(column_value, str):
-        return value in column_value or fuzz.partial_ratio(value.lower(), column_value.lower()) > 60
+        return value in column_value or fuzz.partial_ratio(value.lower(), column_value.lower()) > 85
 
     return False
 
@@ -91,28 +91,26 @@ def metadata_filtering_tool(
     recipient: str = None,
     start_date: str = None,
     end_date: str = None,
-    subject: str = None,
     threadId: str = None,
     sort_by: str = "date",
     sort_order: str = "desc",
     limit: int = 5
 ) -> str:
     """
-    This tool filter emails based on metadata such as sender, recipient, date range, subject, or thread ID.
+    This tool filter emails based on metadata such as sender, recipient, date range, or thread ID.
     
     Args:
-        sender (str or list of str, optional): Filter emails by sender(s). Can be full email address, partial email, or sender names (case-insensitive).
-        recipient (str or list of str, optional): Filter emails by recipient(s). Can be full email addresses, partial emails, or recipient names (case-insensitive).
+        sender (str or list of str, optional): Filter emails by sender(s). Can be full email address, partial email, or sender names, but strictly not numbers. (case-insensitive).
+        recipient (str or list of str, optional): Filter emails by recipient(s). Can be full email addresses, partial emails, or recipient names, but strictly not numbers. (case-insensitive).
         start_date (str, optional): Filter emails sent on or after this date. Format: 'YYYY-MM-DD' or 'YYYY-MM-DD HH:MM:SS'.
         end_date (str, optional): Filter emails sent on or before this date. Format: 'YYYY-MM-DD' or 'YYYY-MM-DD HH:MM:SS'.
-        subject (str, optional): Filter emails containing this keyword in the subject (case-insensitive, partial match supported).
         threadId (str, optional): Filter emails belonging to a specific thread ID.
         sort_by (str, optional): Column to sort the results by. Default is 'date'.
         sort_order (str, optional): Sort order: 'asc' for ascending, 'desc' for descending. Default is 'desc'.
         limit (int, optional): Maximum number of results to return. Default is 10.
     """
 
-    print(f"metadata_filtering_tool is being called {sender}, {recipient}, {start_date}, {end_date}, {subject}, {threadId}, {sort_by}, {sort_order}, {limit}")
+    print(f"metadata_filtering_tool is being called {sender}, {recipient}, {start_date}, {end_date}, {threadId}, {sort_by}, {sort_order}, {limit}")
     temp_df = df.clone()
 
     mask = pl.lit(True)

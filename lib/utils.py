@@ -6,7 +6,7 @@ CHROMA_COLLECTION_NAME = "my_document_collection"
 EMAIL_JSON_PATH = os.path.join(BASE_DIR, "data", "full_mails.jsonl")
 PICKLE_FILE_PATH = os.path.join(BASE_DIR, "data", "optimized_chunks.pkl")
 EMBEDDING_MODEL_NAME = "text-embedding-3-large"
-AGENT_MODEL = "gpt-4o-mini" # Or another powerful model like "gpt-4-turbo"
+AGENT_MODEL = "gpt-4o" # Or another powerful model like "gpt-4-turbo"
 
 # -------------------- SYSTEM PROMPT --------------------
 SYSTEM_PROMPT = """
