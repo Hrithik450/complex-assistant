@@ -3,17 +3,24 @@ import sys
 # --- CHANGED: Import chroma_collection and df instead of index and df ---
 from lib.load_data import chroma_collection, df
 from langchain.tools import tool
+from langchain_openai import OpenAIEmbeddings # <-- 1. IMPORT THE CORRECT EMBEDDING CLIENT
+from lib.utils import EMBEDDING_MODEL_NAME
+import os
+
+embedding_function = OpenAIEmbeddings(model=EMBEDDING_MODEL_NAME)
+
 
 @tool("semantic_search_tool", parse_docstring=True)
 def semantic_search_tool(query: str) -> str:
     """
     This tool performs a semantic search over the indexed documents to retrieve the most relevant chunks based on a given query.
+    Use this for conceptual, topic-based, or fuzzy questions.
     
     Args:
         query (str): The natural language query.
 
     Returns:
-        str: Top 5 most similar email chunks with metadata (threadId, sender, subject, date).
+        str: Top 20 most similar email chunks with metadata (sender, subject, date).
     """
     print(f'semantic_search_tool is being called with {query}')
 
@@ -22,10 +29,13 @@ def semantic_search_tool(query: str) -> str:
     # We now query Chroma to get the IDs of the most relevant documents.
     if chroma_collection is None:
         return "Error: ChromaDB connection is not available."
+    
+    query_embedding = embedding_function.embed_query(query)
         
     search_results = chroma_collection.query(
-        query_texts=[query],
-        n_results=5
+        # query_texts=[query],
+        query_embeddings=[query_embedding],
+        n_results=20
     )
     
     # Extract the string IDs and convert them to integer indices for DataFrame lookup
@@ -59,5 +69,7 @@ def semantic_search_tool(query: str) -> str:
         f"Content Chunk: {res.get('original_text', 'N/A')}"
         for res in results
     ])
+
+    print(f"Formatted results: {formatted_results}")
 
     return formatted_results
