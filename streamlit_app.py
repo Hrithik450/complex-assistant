@@ -33,7 +33,7 @@ def initialize_agent():
     This is cached to avoid rebuilding the graph on every interaction.
     """
     print("Initializing LangGraph agent...")
-    tools = [semantic_search_tool, metadata_filtering_tool, conversation_retriever_tool]
+    tools = [semantic_search_tool, email_filtering_tool, conversation_retriever_tool]
     tool_node = ToolNode(tools)
 
     # Use Streamlit secrets for the OpenAI API key
