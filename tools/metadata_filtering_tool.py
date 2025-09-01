@@ -85,8 +85,8 @@ def normalize_list(lst) -> str:
 
     return ",".join(normalized)
 
-@tool("metadata_filtering_tool", parse_docstring=True)
-def metadata_filtering_tool(
+@tool("email_filtering_tool", parse_docstring=True)
+def email_filtering_tool(
     sender: str = None,
     recipient: str = None,
     start_date: str = None,
@@ -97,11 +97,11 @@ def metadata_filtering_tool(
     limit: int = 5
 ) -> str:
     """
-    This tool filter emails based on metadata such as sender, recipient, date range, or thread ID.
+    This tool filter emails based on metadata such as sender (human), recipient (human), date range, or thread ID.
     
     Args:
-        sender (str or list of str, optional): Filter emails by sender(s). Can be full email address, partial email, or sender names, but strictly not numbers. (case-insensitive).
-        recipient (str or list of str, optional): Filter emails by recipient(s). Can be full email addresses, partial emails, or recipient names, but strictly not numbers. (case-insensitive).
+        sender (str or list of str, optional): Filter emails by sender(s). Can be full email address, partial email, or sender names (case-insensitive, only humans).
+        recipient (str or list of str, optional): Filter emails by recipient(s). Can be full email addresses, partial emails, or recipient names, but strictly not numbers. (case-insensitive, only humans).
         start_date (str, optional): Filter emails sent on or after this date. Format: 'YYYY-MM-DD' or 'YYYY-MM-DD HH:MM:SS'.
         end_date (str, optional): Filter emails sent on or before this date. Format: 'YYYY-MM-DD' or 'YYYY-MM-DD HH:MM:SS'.
         threadId (str, optional): Filter emails belonging to a specific thread ID.
@@ -112,7 +112,6 @@ def metadata_filtering_tool(
 
     print(f"metadata_filtering_tool is being called {sender}, {recipient}, {start_date}, {end_date}, {threadId}, {sort_by}, {sort_order}, {limit}")
     temp_df = df.clone()
-
     mask = pl.lit(True)
     
     # --- Sender filter (case-insensitive, matches name or email) ---
@@ -142,40 +141,47 @@ def metadata_filtering_tool(
         mask = mask & recipient_mask
 
     # --- Date filtering (normalize to datetime) ---
+    if start_date or end_date:
+        temp_df = temp_df.with_columns([
+            pl.col("date").str.strptime(pl.Datetime, format="%Y-%m-%dT%H:%M:%SZ", strict=False).alias("date_dt")
+        ])
+        
     if start_date:
+        start_date_dt = datetime.strptime(start_date, "%Y-%m-%d")
         try:
-            # temp_df = temp_df.filter(pl.col("date") >= start_date)
-            mask = mask & (pl.col("date") >= start_date)
+            mask = mask & (pl.col("date_dt") >= start_date_dt)
         except Exception as e:
             return f"Error parsing start_date: {e}"
 
     if end_date:
+        end_date_dt = datetime.strptime(end_date, "%Y-%m-%d")
         try:
-            # temp_df = temp_df.filter(pl.col("date") <= end_date)
-            mask = mask & (pl.col("date") <= end_date)
+            mask = mask & (pl.col("date_dt") <= end_date_dt)
         except Exception as e:
             return f"Error parsing end_date: {e}"
-        
+
     # Apply the mask only once
     temp_df = temp_df.filter(mask)
-    print(temp_df, 'temp df')
+
+    # --- Sorting ---
+    temp_df = (
+        temp_df
+        .with_columns(
+            pl.col("date").str.strptime(pl.Datetime, format="%Y-%m-%dT%H:%M:%SZ", strict=False)
+        )
+        .sort("date", descending=True)
+    )
 
     # --- Handle empty result ---
     if temp_df.is_empty():
         return "No emails found matching the specified criteria."
-    
-    # --- Sorting ---
-    ascending = (sort_order.lower() == "asc")
-    if sort_by not in temp_df.columns:
-        sort_by = "date"
-    temp_df = temp_df.sort(sort_by, descending=not ascending)
 
     # --- Total count ---
     total_matches = temp_df.height
 
     # --- Preview results ---
     results_preview = temp_df.head(limit).select(['threadId', 'from', 'to', 'subject', 'date', 'cc']).to_dicts()
-        
+
     formatted_results = "\n\n---\n\n".join([
         f"threadId: {res.get('threadId', 'N/A')}\n"
         f"From: {res.get('from', 'N/A')}\n"

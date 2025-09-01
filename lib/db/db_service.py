@@ -60,12 +60,6 @@ class ThreadService():
         return str(thread_id)
     
     def get_last_thread(self, user_id):
-        # Check Redis cache first
-        cache_key = f"user:{user_id}:last_thread"
-        cached_value = self.redis.get(cache_key)
-        if cached_value:
-            return json.loads(cached_value)
-        
         # Query DB
         cursor = self.conn.cursor()
         cursor.execute("""
@@ -76,7 +70,4 @@ class ThreadService():
             """, (user_id,))
         row = cursor.fetchone()
         thread_id = row['id'] if row else None
-
-        # Cache in Redis for 60 minutes
-        self.redis.setex(cache_key, 3600, json.dumps(thread_id))
         return thread_id

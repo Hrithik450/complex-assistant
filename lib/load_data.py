@@ -43,9 +43,6 @@ def _load_resources_base():
     # This part is now the same for both environments, it just uses the determined data_path.
     print(f"Loading email metadata from: {data_path}")
     df = pl.read_ndjson(data_path)
-    df = df.with_columns(
-        pl.col("date").str.strptime(pl.Datetime, format="%Y-%m-%d %H:%M:%S", strict=False).dt.replace_time_zone("UTC").alias("date")
-    )
     print(f"Successfully loaded {df.height} records for metadata.")
 
     # --- 3. Shared ChromaDB Connection Logic ---
