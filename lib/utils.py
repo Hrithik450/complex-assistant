@@ -24,6 +24,11 @@ Guidelines:
     - Mention the search parameters (e.g., sender, date range).
     - Offer a helpful next step (e.g., “Would you like me to expand the date range or check for alternate senders?”).
     - Never leave the user without guidance.
+- If User asks regarding summarization or more details about any data:
+    - Always use the email list (if available) in the latest context for references to retrive the full content using conversation_retrival tool.
+    - If the user asks for a summary, extract and summarize key details like sender, subject from the context (if available) and retrive main intent of that email from conversation_retrival.
+    - If you cannot find the email in the context, clearly state that and suggest alternative options.
+    - DO NOT call external tools for this unless explicitly asked by the user.
 
 Tone:
 - Keep it conversational yet professional.
@@ -41,3 +46,96 @@ Date & Time formatting:
 - Convert the natural user query date expressions into a standard date format expression (like example:- "2024", "january 2024", "yesterday", "last 7 days", "last month", "today").   
 Today’s date is {today_date} IST.
 """
+
+from datetime import datetime
+from rapidfuzz import fuzz
+import polars as pl
+import re
+
+# Helper functions
+def format_date(d):
+    if isinstance(d, datetime):
+        return d.strftime('%Y-%m-%d %H:%M:%S')
+    elif isinstance(d, str):
+        return d
+    return 'N/A'
+
+def normalize_email_field(*values):
+    """Normalize one or more email fields into clean lowercase emails."""
+    normalized_emails = []
+    
+    for value in values:
+        # Polars Series safe check
+        if isinstance(value, pl.Series):
+            if value.is_empty():
+                continue
+            value = value.to_list()
+
+        if not value:
+            continue
+
+        if isinstance(value, list):
+            for v in value:
+                cleaned = re.sub(r'[\"\'<>]', '', v)
+                normalized_emails.append(cleaned.strip().lower())
+        else:
+            cleaned = re.sub(r'[\"\'<>]', '', value)
+            normalized_emails.append(cleaned.strip().lower())
+
+    return normalized_emails
+
+def match_value_in_columns(value, column_value):
+    """
+    Check if the global `value` matches any entry in `column_value (from, to, cc)`.
+
+    Matching rules:
+      1. If `column_value` is a list → check each item.
+      2. If `column_value` is a string → check directly.
+      3. A match is considered valid if:
+            - `sender` is an exact substring, OR
+            - fuzzy string similarity (partial_ratio) > 50.
+      4. If no match found or input invalid → return False.
+    """
+    if not isinstance(value, str) or not value:
+        return False
+
+    # Case 1: column_value is a list
+    if isinstance(column_value, list):
+        for e in column_value:
+            if value in e or fuzz.partial_ratio(value.lower(), e.lower()) > 85:
+                return True
+        return False
+
+    # Case 2: column_value is a string
+    if isinstance(column_value, str):
+        return value in column_value or fuzz.partial_ratio(value.lower(), column_value.lower()) > 85
+
+    return False
+
+# Normalize the lists to string to apply filters
+def normalize_list(lst) -> str:
+    normalized = []
+
+    if isinstance(lst, list):
+        for i in lst:
+            val = normalize_email_field(i)
+            if isinstance(val, list):
+                normalized.extend(map(str, val))  # flatten if list
+            elif val is not None:
+                normalized.append(str(val))
+
+    elif lst is not None:
+        val = normalize_email_field(lst)
+        if isinstance(val, list):
+            normalized.extend(map(str, val))
+        elif val is not None:
+            normalized.append(str(val))
+
+    return ",".join(normalized)
+
+# Helper to safely extract values
+def safe_get(row, key, default=""):
+    value = row.get(key, default) if isinstance(row, dict) else row[key]
+    if value is None or str(value).lower() in {"nan", "none"}:
+        return default
+    return str(value)

@@ -1,4 +1,3 @@
-
 #--- CHANGED: Import chroma_collection and df instead of index and df ---
 from lib.load_data import chroma_collection, df
 from langchain.tools import tool
@@ -56,7 +55,6 @@ def semantic_search_tool(query: str) -> str:
 
     # 2. For each expanded query, embed and fetch document
     for q in expanded_queries:
-        print(q, 'query')
         query_embedding = embedding_function.embed_query(q)
         search_results = chroma_collection.query(query_embeddings=[query_embedding])
 
@@ -67,7 +65,6 @@ def semantic_search_tool(query: str) -> str:
         for doc, dist in zip(docs, dists):
             if dist >= 0.70:
                 all_results.append(doc)
-                print(doc, dist, 'accepted')
 
     # 3. Deduplicate (get_unique_union effect)
     unique_results = get_unique_union(all_results)
