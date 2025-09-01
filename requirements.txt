@@ -34,3 +34,7 @@ psycopg[binary,pool]==3.2.4
 pgvector==0.3.6
 langchain-core==0.3.31
 alembic
+chromadb
+redis
+polars
+rapidfuzz

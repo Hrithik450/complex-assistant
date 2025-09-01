@@ -1,175 +1,107 @@
 import streamlit as st
-import sys
-import os
-import uuid
-import gdown
-import zipfile
-from dotenv import load_dotenv
+st.set_page_config(page_title="AI Email Assistant", page_icon="📧")
+import pytz
+from datetime import datetime
+from rich.console import Console
+from rich.markdown import Markdown
 
-# --- Add the current directory to the Python path ---
-# This ensures that the app can find your agent modules
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-sys.path.append(SCRIPT_DIR)
+# Import the tools and agent components from your existing files
+from lib.utils import AGENT_MODEL, SYSTEM_PROMPT
+from langchain.chat_models import init_chat_model
+from langgraph.prebuilt import ToolNode
+from langgraph.graph import StateGraph, MessagesState, START, END
+from tools.semantic_search_tool import semantic_search_tool
+from tools.metadata_filtering_tool import metadata_filtering_tool
+from tools.conversation_retriever_tool import conversation_retriever_tool
 
-# --- THIS IS THE CHANGE: Import the new, specialized agent ---
-from agent_email_specialist import EmailSpecialistAgent
+# This will trigger the data loading and Chroma connection via st.cache_resource
+from lib.load_data import df, chroma_collection
 
-# --- Page Configuration ---
-st.set_page_config(
-    page_title="AI Email Analyst",
-    page_icon="📧",
-    layout="wide"
-)
+# -------------------- CONFIG --------------------
+IST = pytz.timezone("Asia/Kolkata")
+today_date = datetime.now(IST).strftime("%B %d, %Y")
 
-st.title("📧 AI Email Analyst")
-st.caption("An intelligent agent that specializes in answering questions about your emails.")
-
-# --- File Downloader & Provisioning ---
-def provision_files():
-    """
-    Checks for necessary model and data files and downloads them from Google Drive if missing.
-    This is the single source of truth for setting up the app's environment on Streamlit Cloud.
-    """
-    # --- THIS IS THE CHANGE: Point to the new email-specific files ---
-    faiss_path = os.path.join(SCRIPT_DIR, "emails_faiss.bin")
-    metadata_path = os.path.join(SCRIPT_DIR, "emails_metadata.pkl")
-    model_path = os.path.join(SCRIPT_DIR, "finetuned_bge_real_estate_model")
-    model_zip_path = os.path.join(SCRIPT_DIR, "finetuned_model.zip")
-
-    # If everything already exists, we don't need to do anything.
-    if os.path.exists(faiss_path) and os.path.exists(metadata_path) and os.path.isdir(model_path):
-        return
-
-    st.info("Downloading required model and data files. This may take a moment on first startup...")
-    try:
-        # Get File IDs from Streamlit secrets
-        faiss_id = st.secrets["GDRIVE_EMAIL_FAISS_ID"]
-        metadata_id = st.secrets["GDRIVE_EMAIL_METADATA_ID"]
-        model_zip_id = st.secrets["GDRIVE_MODEL_ZIP_ID"]
-
-        # Download files using gdown, only if they don't already exist
-        if not os.path.exists(faiss_path):
-            with st.spinner("Downloading Email FAISS index..."):
-                gdown.download(id=faiss_id, output=faiss_path, quiet=True)
-            st.success("Email FAISS index downloaded.")
-
-        if not os.path.exists(metadata_path):
-            with st.spinner("Downloading Email metadata store..."):
-                gdown.download(id=metadata_id, output=metadata_path, quiet=True)
-            st.success("Email metadata downloaded.")
-
-        if not os.path.isdir(model_path):
-            with st.spinner("Downloading fine-tuned model..."):
-                gdown.download(id=model_zip_id, output=model_zip_path, quiet=True)
-            st.success("Model zip file downloaded.")
-
-            with st.spinner("Unzipping model..."):
-                with zipfile.ZipFile(model_zip_path, 'r') as zip_ref:
-                    zip_ref.extractall(SCRIPT_DIR)
-            st.success("Model unzipped successfully.")
-            
-            os.remove(model_zip_path)
-        
-        st.success("All required files are ready!")
-    except Exception as e:
-        st.error(f"Failed to download files from Google Drive. Please ensure GDrive File IDs are correct in secrets. Error: {e}")
-        st.stop()
-
-# --- Initialization and Caching ---
+# -------------------- AGENT SETUP (CACHED) --------------------
 @st.cache_resource
-def initialize_system():
+def initialize_agent():
     """
-    Initializes the EmailSpecialistAgent. This runs only once per session.
+    Initializes and compiles the LangGraph agent.
+    This is cached to avoid rebuilding the graph on every interaction.
     """
-    load_dotenv()
-    
-    # This function will block until all files are present before proceeding.
-    provision_files()
-    
-    # Check for necessary API keys
-    required_secrets = ["OPENAI_API_KEY", "TAVILY_API_KEY"]
-    missing_secrets = [secret for secret in required_secrets if secret not in st.secrets and not os.getenv(secret)]
-    if missing_secrets:
-        st.error(f"FATAL: Missing the following secrets: {', '.join(missing_secrets)}. Please add them to your Streamlit secrets.")
-        st.stop()
-        
-    try:
-        with st.spinner("Initializing AI Email Analyst..."):
-            # --- THIS IS THE CHANGE: Instantiate the new agent ---
-            agent = EmailSpecialistAgent()
-        return agent
-    except Exception as e:
-        st.error(f"A critical error occurred during agent initialization: {e}")
-        import traceback
-        st.code(traceback.format_exc())
-        st.stop()
+    print("Initializing LangGraph agent...")
+    tools = [semantic_search_tool, metadata_filtering_tool, conversation_retriever_tool]
+    tool_node = ToolNode(tools)
 
-# Initialize the agent system
-manager_agent = initialize_system()
-st.success("AI Email Analyst is ready.", icon="✅")
+    # Use Streamlit secrets for the OpenAI API key
+    model = init_chat_model(model=AGENT_MODEL, temperature=0, api_key=st.secrets["OPENAI_API_KEY"])
+    model_with_tools = model.bind_tools(tools)
 
-# --- Session State Management and UI ---
-if "session_id" not in st.session_state:
-    st.session_state.session_id = str(uuid.uuid4())
+    def call_model(state: MessagesState) -> MessagesState:
+        messages = state["messages"]
+        response = model_with_tools.invoke(input=messages)
+        return {"messages": [response]}
+
+    def should_continue(state: MessagesState) -> bool:
+        last_message = state["messages"][-1]
+        return 'tools' if last_message.tool_calls else END
+
+    builder = StateGraph(MessagesState)
+    builder.add_node("call_model", call_model)
+    builder.add_node("tools", tool_node)
+    builder.add_edge(START, "call_model")
+    builder.add_conditional_edges("call_model", should_continue, ["tools", END])
+    builder.add_edge("tools", "call_model")
+
+    agent_graph = builder.compile()
+    print("LangGraph agent initialized successfully.")
+    return agent_graph
+
+# -------------------- STREAMLIT UI --------------------
+# st.set_page_config(page_title="AI Email Assistant", page_icon="📧")
+st.title("📧 AI Email Assistant")
+st.write("Ask me anything about your emails. I can search for content, filter by sender/date, and more.")
+
+# Initialize the agent
+email_agent_graph = initialize_agent()
+
+# Initialize chat history in session state
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# --- Feedback and Correction Logic ---
-def toggle_correction_box(record_id):
-    """Callback to show the correction text area."""
-    st.session_state[f"show_correction_{record_id}"] = True
-
-def handle_correction(record_id):
-    """Callback to handle the submission of a correction."""
-    corrected_text = st.session_state[f"correction_text_{record_id}"]
-    if corrected_text and not corrected_text.isspace():
-        with st.spinner("Learning from your feedback... This may take a moment."):
-            try:
-                # The agent's data_manager has the upsert logic
-                manager_agent.data_manager.upsert_correction(corrected_text)
-                st.toast("Thank you! I've updated my knowledge base.", icon="🧠")
-                # Update UI state
-                st.session_state[f"feedback_given_{record_id}"] = True
-                st.session_state[f"show_correction_{record_id}"] = False
-                st.rerun()
-            except Exception as e:
-                st.error(f"Failed to save correction: {e}")
-    else:
-        st.warning("Please enter a corrected response.")
-
-# Display chat history
+# Display chat messages from history on app rerun
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
-        if message["role"] == "assistant" and "record_id" in message:
-            record_id = message["record_id"]
-            if not st.session_state.get(f"feedback_given_{record_id}", False):
-                cols = st.columns(12)
-                cols[0].button("👍", key=f"up_{record_id}", on_click=manager_agent.data_manager.update_feedback, args=(record_id, 1))
-                cols[1].button("👎", key=f"down_{record_id}", on_click=toggle_correction_box, args=(record_id,))
-            
-            if st.session_state.get(f"show_correction_{record_id}", False):
-                st.text_area("Provide the correct answer here:", key=f"correction_text_{record_id}")
-                st.button("Submit Correction", key=f"submit_{record_id}", on_click=handle_correction, args=(record_id,))
 
-# Main chat input logic
+# Accept user input
 if prompt := st.chat_input("Ask a question about your emails..."):
-    if prompt and not prompt.isspace():
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
+    # Add user message to chat history
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    # Display user message in chat message container
+    with st.chat_message("user"):
+        st.markdown(prompt)
 
-        with st.chat_message("assistant"):
-            with st.spinner("The AI Email Analyst is thinking..."):
-                response, record_id = manager_agent.run(
-                    user_query=prompt, 
-                    session_id=st.session_state.session_id
-                )
-                st.markdown(response)
-                
-                st.session_state.messages.append({
-                    "role": "assistant", 
-                    "content": response, 
-                    "record_id": record_id
-                })
-                st.rerun()
+    # Display assistant response in chat message container
+    with st.chat_message("assistant"):
+        with st.spinner("Thinking..."):
+            # Construct the input for the agent
+            # Note: We are not using the database/redis memory here for simplicity in Streamlit,
+            # but using the session state history instead.
+            chat_history_for_agent = [msg for msg in st.session_state.messages if msg["role"] != "system"]
+
+            initialState = {
+                "messages": [
+                    {"role": "system", "content": SYSTEM_PROMPT.format(today_date=today_date)},
+                    *chat_history_for_agent,
+                ]
+            }
+            
+            # Invoke the agent to get the final response
+            # .invoke is synchronous and simpler for a direct request-response in Streamlit
+            final_state = email_agent_graph.invoke(initialState)
+            agent_answer = final_state["messages"][-1].content
+            
+            st.markdown(agent_answer)
+    
+    # Add assistant response to chat history
+    st.session_state.messages.append({"role": "assistant", "content": agent_answer})
