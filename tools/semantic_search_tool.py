@@ -1,5 +1,5 @@
 import sys
-sys.path.append(r"d:\VSCode\re-assistant")
+# sys.path.append(r"d:\VSCode\re-assistant")
 # --- CHANGED: Import chroma_collection and df instead of index and df ---
 from lib.load_data import chroma_collection, df
 from langchain.tools import tool
