@@ -15,7 +15,7 @@ from langchain.chat_models import init_chat_model
 from langgraph.prebuilt import ToolNode
 from langgraph.graph import StateGraph, MessagesState, START, END
 from tools.semantic_search_tool import semantic_search_tool
-from tools.metadata_filtering_tool import metadata_filtering_tool
+from tools.metadata_filtering_tool import email_filtering_tool
 from tools.conversation_retriever_tool import conversation_retriever_tool
 
 # This will trigger the data loading and Chroma connection via st.cache_resource
