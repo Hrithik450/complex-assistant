@@ -36,7 +36,6 @@ def normalize_email_field(*values):
 
     return normalized_emails
 
-
 def match_value_in_columns(value, column_value):
     """
     Check if the global `value` matches any entry in `column_value (from, to, cc)`.
@@ -123,7 +122,7 @@ def metadata_filtering_tool(
         sender = sender.lower()
         # Add a normalized column
         temp_df = temp_df.with_columns([
-            pl.col("from").map_elements(normalize_email_field, return_dtype=list[str]).alias("from_normalized")
+            pl.col("from").map_elements(normalize_list, return_dtype=str).alias("from_normalized")
         ])
         # Filter rows where the normalized 'from' matches sender
         sender_mask = pl.col("from_normalized").map_elements(lambda x: match_value_in_columns(sender, x), return_dtype=bool)
@@ -161,6 +160,7 @@ def metadata_filtering_tool(
         
     # Apply the mask only once
     temp_df = temp_df.filter(mask)
+    print(temp_df, 'temp df')
 
     # --- Handle empty result ---
     if temp_df.is_empty():
