@@ -13,6 +13,7 @@ from langgraph.graph import StateGraph, MessagesState, START, END
 from tools.semantic_search_tool import semantic_search_tool
 from tools.metadata_filtering_tool import email_filtering_tool
 from tools.conversation_retriever_tool import conversation_retriever_tool
+from tools.web_search_tool import web_search_tool
 from lib.db.db_service import ThreadService
 from lib.db.db_conn import conn
 
@@ -31,7 +32,7 @@ if REDIS_URL:
 print(redis_client, 'redis')
 
 # Define the list of tools the agent can use
-tools = [semantic_search_tool, email_filtering_tool, conversation_retriever_tool]
+tools = [semantic_search_tool, email_filtering_tool, conversation_retriever_tool, web_search_tool]
 tool_node = ToolNode(tools)
 
 # -------------------- INITIALIZE THE MODEL --------------------

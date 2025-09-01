@@ -17,6 +17,8 @@ from langgraph.graph import StateGraph, MessagesState, START, END
 from tools.semantic_search_tool import semantic_search_tool
 from tools.metadata_filtering_tool import email_filtering_tool
 from tools.conversation_retriever_tool import conversation_retriever_tool
+from tools.web_search_tool import web_search_tool
+
 
 # This will trigger the data loading and Chroma connection via st.cache_resource
 from lib.load_data import df, chroma_collection
@@ -33,7 +35,7 @@ def initialize_agent():
     This is cached to avoid rebuilding the graph on every interaction.
     """
     print("Initializing LangGraph agent...")
-    tools = [semantic_search_tool, email_filtering_tool, conversation_retriever_tool]
+    tools = [semantic_search_tool, email_filtering_tool, conversation_retriever_tool, web_search_tool]
     tool_node = ToolNode(tools)
 
     # Use Streamlit secrets for the OpenAI API key
