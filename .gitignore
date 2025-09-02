@@ -2,8 +2,7 @@
 .env
 data/
 .streamlit/secrets.toml
-lib/data/emails_faiss_oaite_2.35G.bin
-lib/data/full_mails.jsonl
+lib/data/
 finetuned_bge_real_estate_model/
 checkpoints/
 credentials.json
@@ -17,6 +16,7 @@ real_estate_finetuned_local_faiss.bin
 real_estate_training_dataset.jsonl
 emails_faiss.bin
 emails_metadata.pkl
+full_mails.jsonl
 
 __pycache__/
 *.pyc
