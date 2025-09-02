@@ -1,3 +1,21 @@
+# --- THIS IS THE FIX ---
+# It checks if the app is running on Streamlit Cloud by looking for a specific environment variable.
+# The sqlite3 patch will ONLY run when deployed to the cloud.
+import os
+import sys
+
+# Streamlit Cloud sets the 'STREAMLIT_SERVER_PORT' environment variable.
+# We can use its presence to detect the cloud environment.
+if 'STREAMLIT_SERVER_PORT' in os.environ:
+    print("Streamlit Cloud environment detected. Applying sqlite3 patch.")
+    try:
+        __import__('pysqlite3')
+        sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
+        print("Successfully patched sqlite3.")
+    except ImportError:
+        print("pysqlite3-binary not found, skipping patch. This may cause issues on Streamlit Cloud.")
+# --- END OF FIX ---
+
 #--- CHANGED: Import chroma_collection and df instead of index and df ---
 from lib.load_data import chroma_collection, df
 from langchain.tools import tool
