@@ -5,6 +5,44 @@ class ThreadService():
         self.conn = connection
         self.redis = redis_client
 
+    # We now fetch the creation date to show in the sidebar.
+    def get_all_threads_for_user(self, user_id):
+        """Retrieves all threads for a given user, ordered by most recent."""
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT id, title, created_at 
+            FROM thread
+            WHERE user_id = %s 
+            ORDER BY created_at DESC
+        """, (user_id,))
+        rows = cursor.fetchall()
+        threads = [{"id": str(r['id']), "title": r['title'], "created_at": r['created_at']} for r in rows]
+        return threads
+    
+    # --- NEW FUNCTION ---
+    def rename_thread(self, thread_id, new_title):
+        """Renames a specific thread."""
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            UPDATE thread SET title = %s WHERE id = %s
+        """, (new_title, thread_id))
+        self.conn.commit()
+        # Invalidate any caches related to this thread if necessary
+        # For now, we assume the title isn't heavily cached elsewhere
+
+    # --- NEW FUNCTION ---
+    def delete_thread(self, thread_id):
+        """Deletes a specific thread and all its messages."""
+        cursor = self.conn.cursor()
+        # The ON DELETE CASCADE in your database schema will handle deleting messages
+        cursor.execute("""
+            DELETE FROM thread WHERE id = %s
+        """, (thread_id,))
+        self.conn.commit()
+        # Invalidate any caches related to this thread
+        cache_key = f"thread:{thread_id}:thread_messages"
+        self.redis.delete(cache_key)
+
     def get_thread_messages(self, thread_id):
         # Check Redis cache first
         cache_key = f"thread:{thread_id}:thread_messages"

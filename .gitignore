@@ -2,6 +2,8 @@
 .env
 data/
 .streamlit/secrets.toml
+lib/data/emails_faiss_oaite_2.35G.bin
+lib/data/full_mails.jsonl
 finetuned_bge_real_estate_model/
 checkpoints/
 credentials.json

@@ -1,10 +1,25 @@
-__import__('pysqlite3')
+# --- THIS IS THE FIX ---
+# It checks if the app is running on Streamlit Cloud by looking for a specific environment variable.
+# The sqlite3 patch will ONLY run when deployed to the cloud.
+import os
 import sys
-sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
+
+# Streamlit Cloud sets the 'STREAMLIT_SERVER_PORT' environment variable.
+# We can use its presence to detect the cloud environment.
+if 'STREAMLIT_SERVER_PORT' in os.environ:
+    print("Streamlit Cloud environment detected. Applying sqlite3 patch.")
+    try:
+        __import__('pysqlite3')
+        sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
+        print("Successfully patched sqlite3.")
+    except ImportError:
+        print("pysqlite3-binary not found, skipping patch. This may cause issues on Streamlit Cloud.")
+# --- END OF FIX ---
 
 import streamlit as st
 st.set_page_config(page_title="AI Email Assistant", page_icon="📧")
 import pytz
+import redis
 from datetime import datetime
 from rich.console import Console
 from rich.markdown import Markdown
@@ -23,12 +38,23 @@ from tools.web_search_tool import web_search_tool
 # This will trigger the data loading and Chroma connection via st.cache_resource
 from lib.load_data import df, chroma_collection
 
+# Import your database logic
+from lib.db.db_service import ThreadService
+from lib.db.db_conn import conn
+
 # -------------------- CONFIG --------------------
 IST = pytz.timezone("Asia/Kolkata")
 today_date = datetime.now(IST).strftime("%B %d, %Y")
+USER_ID = "63f05e7a-35ac-4deb-9f38-e2864cdf3a1d" # Hardcoded for this example
 
-# -------------------- AGENT SETUP (CACHED) --------------------
+# -------------------- CACHED RESOURCES --------------------
 @st.cache_resource
+def get_memory():
+    """Initializes and returns the Redis client and ThreadService."""
+    redis_client = redis.from_url(st.secrets["REDIS_URL"], decode_responses=True)
+    memory = ThreadService(connection=conn, redis_client=redis_client)
+    return memory
+
 def initialize_agent():
     """
     Initializes and compiles the LangGraph agent.
@@ -62,19 +88,85 @@ def initialize_agent():
     print("LangGraph agent initialized successfully.")
     return agent_graph
 
+# --- Load cached resources ---
+memory = get_memory()
+email_agent_graph = initialize_agent()
+
+# -------------------- SESSION STATE INITIALIZATION --------------------
+if "thread_id" not in st.session_state:
+    st.session_state.thread_id = None
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
+# -------------------- NEW: ENHANCED SIDEBAR --------------------
+st.sidebar.title("Chat Sessions")
+
+if st.sidebar.button("➕ New Chat", use_container_width=True):
+    # Use the first user prompt as the title for the new chat
+    st.session_state.thread_id = memory.create_new_thread(user_id=USER_ID, title="New Conversation")
+    st.session_state.messages = []
+    st.rerun()
+
+# --- NEW: Section for managing the CURRENTLY active chat ---
+if st.session_state.thread_id:
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### Manage Chat")
+    
+    # Find the current thread's title to pre-fill the text input
+    threads = memory.get_all_threads_for_user(USER_ID)
+    current_thread = next((t for t in threads if t["id"] == st.session_state.thread_id), None)
+    current_title = current_thread["title"] if current_thread else ""
+
+    # RENAME functionality
+    new_title = st.sidebar.text_input("Rename chat", value=current_title, key=f"rename_{st.session_state.thread_id}")
+    if st.sidebar.button("Save Name", use_container_width=True):
+        if new_title and new_title != current_title:
+            memory.rename_thread(st.session_state.thread_id, new_title)
+            st.sidebar.success("Renamed!")
+            st.rerun()
+
+    # DELETE functionality with confirmation
+    with st.sidebar.expander("Delete Chat"):
+        st.warning("This action cannot be undone.")
+        if st.button("Confirm Delete", use_container_width=True, type="primary"):
+            memory.delete_thread(st.session_state.thread_id)
+            st.session_state.thread_id = None
+            st.session_state.messages = []
+            st.rerun()
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("**Previous Chats**")
+
+# List all existing threads with their creation dates
+all_threads = memory.get_all_threads_for_user(USER_ID)
+for thread in all_threads:
+    # Use columns for a cleaner layout
+    col1, col2 = st.sidebar.columns([3, 1])
+    with col1:
+        if st.button(thread["title"], key=thread["id"], use_container_width=True):
+            st.session_state.thread_id = thread["id"]
+            st.session_state.messages = [] 
+            st.rerun()
+    with col2:
+        # Display the formatted date next to the button
+        st.caption(thread["created_at"].strftime("%b %d"))
+
 # -------------------- STREAMLIT UI --------------------
 # st.set_page_config(page_title="AI Email Assistant", page_icon="📧")
 st.title("📧 AI Email Assistant")
 st.write("Ask me anything about your emails. I can search for content, filter by sender/date, and more.")
 
-# Initialize the agent
-email_agent_graph = initialize_agent()
+# If no thread is selected, show a welcome message
+if not st.session_state.thread_id:
+    st.info("Select a chat from the sidebar or start a new one.")
+    st.stop()
 
-# Initialize chat history in session state
-if "messages" not in st.session_state:
-    st.session_state.messages = []
+# Load messages for the current thread if they haven't been loaded yet
+if not st.session_state.messages:
+    thread_history = memory.get_thread_messages(st.session_state.thread_id)
+    st.session_state.messages = thread_history.get("messages", [])
 
-# Display chat messages from history on app rerun
+# Display chat messages
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
@@ -93,12 +185,12 @@ if prompt := st.chat_input("Ask a question about your emails..."):
             # Construct the input for the agent
             # Note: We are not using the database/redis memory here for simplicity in Streamlit,
             # but using the session state history instead.
-            chat_history_for_agent = [msg for msg in st.session_state.messages if msg["role"] != "system"]
+            # chat_history_for_agent = [msg for msg in st.session_state.messages if msg["role"] != "system"]
 
             initialState = {
                 "messages": [
                     {"role": "system", "content": SYSTEM_PROMPT.format(today_date=today_date)},
-                    *chat_history_for_agent,
+                    *st.session_state.messages,
                 ]
             }
             
@@ -111,3 +203,9 @@ if prompt := st.chat_input("Ask a question about your emails..."):
     
     # Add assistant response to chat history
     st.session_state.messages.append({"role": "assistant", "content": agent_answer})
+
+    # Save the new messages to the database
+    memory.put_thread_message(st.session_state.thread_id, [
+        {"role": "user", "content": prompt},
+        {"role": "assistant", "content": agent_answer}
+    ])
