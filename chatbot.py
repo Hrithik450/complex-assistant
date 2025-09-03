@@ -13,7 +13,7 @@ from langgraph.graph import StateGraph, MessagesState, START, END
 from tools.semantic_search_tool import semantic_search_tool
 from tools.metadata_filtering_tool import email_filtering_tool
 from tools.conversation_retriever_tool import conversation_retriever_tool
-from tools.web_search_tool import web_search_tool
+# from tools.web_search_tool import web_search_tool
 from lib.db.db_service import ThreadService
 from lib.db.db_conn import conn
 
@@ -32,7 +32,7 @@ if REDIS_URL:
 print(redis_client, 'redis')
 
 # Define the list of tools the agent can use
-tools = [semantic_search_tool, email_filtering_tool, conversation_retriever_tool, web_search_tool]
+tools = [semantic_search_tool, email_filtering_tool, conversation_retriever_tool]
 tool_node = ToolNode(tools)
 
 # -------------------- INITIALIZE THE MODEL --------------------
@@ -96,7 +96,7 @@ async def main():
 
     # Loop until the user chooses to quit the chat
     while True:
-        last_20_messages = memory.get_thread_messages(thread_id)
+        last_5_messages = memory.get_thread_messages(thread_id)
 
         user_input = input("\nAsk a question about your emails: ")
         if user_input.lower() == 'exit':
@@ -105,7 +105,7 @@ async def main():
         initialState = {
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT.format(today_date=today_date)},
-                *last_20_messages['messages'],
+                *last_5_messages['messages'],
                 {"role": "user", "content": user_input}
             ]
         }

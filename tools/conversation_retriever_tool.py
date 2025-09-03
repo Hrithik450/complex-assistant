@@ -7,23 +7,23 @@ from langchain.tools import tool
 from lib.load_data import df
 import polars as pl
 
-template = """
-You are an assistant that summarizes email conversations.
-Read the full thread and give a clear summary in plain English that anyone can understand.
-Rules:
-- Keep it long brief (detailed)
-- Focus on the main people, topic, and outcome.
-- Skip technical details, metadata, and signatures.
-- Combine the whole thread into one simple story.
-- Stay neutral and clear.
-"""
+# template = """
+# You are an assistant that summarizes email conversations.
+# Read the full thread and give a clear summary in plain English that anyone can understand.
+# Rules:
+# - Keep it long brief (detailed)
+# - Focus on the main people, topic, and outcome.
+# - Skip technical details, metadata, and signatures.
+# - Combine the whole thread into one simple story.
+# - Stay neutral and clear.
+# """
 
-prompt_perspectives = ChatPromptTemplate.from_template(template)
+# prompt_perspectives = ChatPromptTemplate.from_template(template)
 
-generate_summary = (
-    prompt_perspectives 
-    | ChatOpenAI(model=AGENT_MODEL, temperature=0) | StrOutputParser()
-)
+# generate_summary = (
+#     prompt_perspectives 
+#     | ChatOpenAI(model=AGENT_MODEL, temperature=0) | StrOutputParser()
+# )
 
 @tool("conversation_retriever_tool", parse_docstring=True)
 def conversation_retriever_tool(
@@ -35,7 +35,7 @@ def conversation_retriever_tool(
 ) -> str:
     """
     Retrieves the full history of an email conversation based on given parameters.
-    It will try to resolve the unique thread using id, threadId, or a combination of filters.
+    It will try to resolve the unique thread using id, or a combination of filters.
 
     Args:
         id (str, optional): Unique mail id (fastest lookup if present).
@@ -112,8 +112,8 @@ def conversation_retriever_tool(
     ])
 
     # Pass to summary generator
-    summary = generate_summary.invoke({
-        "question": f"Summarize this email thread:\n{full_conversation}"
-    })
+    # summary = generate_summary.invoke({
+    #     "question": f"Summarize this email thread:\n{full_conversation}"
+    # })
 
-    return summary
+    return full_conversation

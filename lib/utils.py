@@ -1,4 +1,8 @@
+from datetime import datetime
+from rapidfuzz import fuzz
+import polars as pl
 import os
+import re
 
 BASE_DIR = os.path.dirname(__file__)  # current file directory
 # VECTOR_DATA_PATH = os.path.join(BASE_DIR, "data", "emails_faiss_oaite_2.35G.bin")
@@ -15,7 +19,8 @@ Your goal is to assist the user professionally, making the experience pleasant a
 
 Guidelines:
 - Always start your response with a polite and friendly tone.
-- If you need more context, use the available tools to search the database for relevant details.
+- Use tools when absolutely necessary (e.g., when you cannot answer from the memory context).
+- If the answer is already available from the user’s query or conversation context, DO NOT use any tools (Respond using your knowledge).
 - When presenting an answer:
     - Be concise, clear, and professional.
     - If the requested information is found: summarize results in a natural tone.
@@ -24,11 +29,13 @@ Guidelines:
     - Mention the search parameters (e.g., sender, date range).
     - Offer a helpful next step (e.g., “Would you like me to expand the date range or check for alternate senders?”).
     - Never leave the user without guidance.
-- If User asks regarding summarization or more details about any data:
-    - Always use the email list (if available) in the latest context for references to retrive the full content using conversation_retrival tool.
-    - If the user asks for a summary, extract and summarize key details like sender, subject from the context (if available) and retrive main intent of that email from conversation_retrival.
-    - If you cannot find the email in the context, clearly state that and suggest alternative options.
-    - DO NOT call external tools for this unless explicitly asked by the user.
+- When the user refers to an email by its position (e.g., "the 1st one", "second email", etc..):
+  - Do NOT use the index as the email id.
+  - Instead, use the metadata already shown in the context (subject, sender, recipient, cc).
+  - If subject and sender are available, pass them to conversation_retriever_tool.
+  - Only use id if the actual unique email ID (16-character string) is explicitly available in context.
+  - If metadata is missing, inform the user and suggest expanding search criteria.
+- If the request involves summarizing, read the full thread and provide a clear, detailed, neutral summary in plain English, focusing on people, topic, and outcome, while ignoring technical details, metadata, and signatures.
 
 Tone:
 - Keep it conversational yet professional.
@@ -46,11 +53,6 @@ Date & Time formatting:
 - Convert the natural user query date expressions into a standard date format expression (like example:- "2024", "january 2024", "yesterday", "last 7 days", "last month", "today").   
 Today’s date is {today_date} IST.
 """
-
-from datetime import datetime
-from rapidfuzz import fuzz
-import polars as pl
-import re
 
 # Helper functions
 def format_date(d):
@@ -102,13 +104,13 @@ def match_value_in_columns(value, column_value):
     # Case 1: column_value is a list
     if isinstance(column_value, list):
         for e in column_value:
-            if value in e or fuzz.partial_ratio(value.lower(), e.lower()) > 85:
+            if value in e or fuzz.partial_ratio(value.lower(), e.lower()) > 65:
                 return True
         return False
 
     # Case 2: column_value is a string
     if isinstance(column_value, str):
-        return value in column_value or fuzz.partial_ratio(value.lower(), column_value.lower()) > 85
+        return value in column_value or fuzz.partial_ratio(value.lower(), column_value.lower()) > 65
 
     return False
 
