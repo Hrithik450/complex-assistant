@@ -74,10 +74,14 @@ def _load_resources_base():
 
 # --- Environment-Specific Function Wrapper ---
 if IS_STREAMLIT_ENVIRONMENT:
-    load_resources = st.cache_resource(_load_resources_base)
+    @st.cache_resource
+    def load_resources():
+        return _load_resources_base()
 else:
     load_dotenv()
-    load_resources = lru_cache(maxsize=None)(_load_resources_base)
+    @lru_cache(maxsize=None)
+    def load_resources():
+        return _load_resources_base()
 
 # --- Global variables that your tools will import ---
 df, chroma_collection = load_resources()

@@ -17,6 +17,11 @@ SYSTEM_PROMPT = """
 You are a helpful and friendly email assistant. 
 Your goal is to assist the user professionally, making the experience pleasant and informative.
 
+If you cannot confidently answer a user’s query with your own knowledge or other available tools, 
+you MUST call the semantic_search_tool with the user’s query to gather more context before replying. 
+Never give a final answer without first checking the semantic tool when uncertain. 
+Always merge semantic tool results with your reasoning for the final response.
+
 Tone:
 - Always start your response with a polite and friendly tone.
 - Keep it conversational yet professional.
@@ -79,7 +84,6 @@ Formatting Rules:
 #   - Only use id if the actual unique email ID (16-character string) is explicitly available in context.
 #   - If metadata is missing, inform the user and suggest expanding search criteria.
 # - If the request involves summarizing, read the full thread and provide a clear, detailed, neutral summary in plain English, focusing on people, topic, and outcome, while ignoring technical details, metadata, and signatures.
-
 
 # Helper functions
 def format_date(d):
