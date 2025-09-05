@@ -1,4 +1,4 @@
-from lib.utils import normalize_list, match_value_in_columns, format_date
+from lib.utils import normalize_list, match_value_in_columns
 from langchain.tools import tool
 from datetime import datetime
 from lib.load_data import df
@@ -6,11 +6,13 @@ import polars as pl
 
 @tool("email_filtering_tool", parse_docstring=True)
 def email_filtering_tool(
+    uid: str = None,
     sender: str = None,
     recipient: str = None,
+    subject: str = None,
+    labels: list[str] = None,
     start_date: str = None,
     end_date: str = None,
-    threadId: str = None,
     sort_by: str = "date",
     sort_order: str = "desc",
     limit: int = 5
@@ -19,19 +21,24 @@ def email_filtering_tool(
     This tool filter emails based on metadata such as sender (human), recipient (human), date range, or thread ID.
     
     Args:
+        uid (str, optional): Filter emails by their unique UID. Exact match required.
         sender (str or list of str, optional): Filter emails by sender(s). Can be full email address, partial email, or sender names (case-insensitive, only humans).
         recipient (str or list of str, optional): Filter emails by recipient(s). Can be full email addresses, partial emails, or recipient names, but strictly not numbers. (case-insensitive, only humans).
+        subject (str, optional): Filter email by subject text. Can be full or partial subject string (case-insensitive).
+        labels (list of str, optional): Filter emails by one or more labels. Matches any email that contains at least one of the provided labels (case-insensitive).
         start_date (str, optional): Filter emails sent on or after this date. Format: 'YYYY-MM-DD' or 'YYYY-MM-DD HH:MM:SS'.
         end_date (str, optional): Filter emails sent on or before this date. Format: 'YYYY-MM-DD' or 'YYYY-MM-DD HH:MM:SS'.
-        threadId (str, optional): Filter emails belonging to a specific thread ID.
         sort_by (str, optional): Column to sort the results by. Default is 'date'.
         sort_order (str, optional): Sort order: 'asc' for ascending, 'desc' for descending. Default is 'desc'.
         limit (int, optional): Maximum number of results to return. Default is 10.
     """
 
-    print(f"metadata_filtering_tool is being called {sender}, {recipient}, {start_date}, {end_date}, {threadId}, {sort_by}, {sort_order}, {limit}")
+    print(f"email_filtering_tool is being called {uid}, {sender}, {recipient}, {subject}, {labels}, {start_date}, {end_date}, {sort_by}, {sort_order}, {limit}")
     temp_df = df.clone()
     mask = pl.lit(True)
+
+    if uid:
+        mask = mask & (pl.col("id") == uid)
     
     # --- Sender filter (case-insensitive, matches name or email) ---
     if sender:
@@ -78,17 +85,32 @@ def email_filtering_tool(
             mask = mask & (pl.col("date_dt") <= end_date_dt)
         except Exception as e:
             return f"Error parsing end_date: {e}"
+        
+    if labels: 
+        labels = [lbl.strip().lower() for lbl in labels]
+
+        temp_df = temp_df.with_columns([
+            pl.col("lables").map_elements(normalize_list, return_dtype=str).alias("labels_normalized")
+        ])
+
+        labels_mask = pl.col("labels_normalized").map_elements(
+            lambda email_lables: any(lbl in email_lables for lbl in labels),
+            return_dtype=bool
+        )
+
+        mask = mask & labels_mask
+
+    if subject:
+        subject_mask = pl.col("subject").map_elements(lambda x: match_value_in_columns(subject, x), return_dtype=bool)
+        mask = mask & subject_mask
 
     # Apply the mask only once
     temp_df = temp_df.filter(mask)
 
     # --- Sorting ---
-    temp_df = (
-        temp_df
-        .with_columns(
-            pl.col("date").str.strptime(pl.Datetime, format="%Y-%m-%dT%H:%M:%SZ", strict=False)
-        )
-        .sort("date", descending=True)
+    temp_df = temp_df.sort(
+        by=sort_by,
+        descending=(sort_order.lower() == "desc")
     )
 
     # --- Handle empty result ---
@@ -99,15 +121,19 @@ def email_filtering_tool(
     total_matches = temp_df.height
 
     # --- Preview results ---
-    results_preview = temp_df.head(limit).select(['threadId', 'from', 'to', 'subject', 'date', 'cc']).to_dicts()
+    results_preview = temp_df.head(limit).select(['id', 'from', 'to', 'subject', 'date', 'cc', 'snippet', 'body', 'labels', 'attachments']).to_dicts()
 
     formatted_results = "\n\n---\n\n".join([
-        f"threadId: {res.get('threadId', 'N/A')}\n"
+        f"id: {res.get('id', 'N/A')}\n"
         f"From: {res.get('from', 'N/A')}\n"
         f"To: {res.get('to', 'N/A')}\n"
         f"CC: {res.get('cc', 'N/A')}\n"
         f"Subject: {res.get('subject', 'N/A')}\n"
-        f"Date: {format_date(res.get('date'))}"
+        f"Date: {res.get('date', 'N/A')}\n"
+        f"Snippet: {res.get('snippet', 'N/A')}\n"
+        f"Body:\n{res.get('body', 'N/A')}\n"
+        f"Labels: {res.get('labels', 'N/A')}\n"
+        f"Attachments: {res.get('attachments', 'N/A')}\n"
         for res in results_preview
     ])
 

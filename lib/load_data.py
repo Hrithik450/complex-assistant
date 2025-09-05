@@ -1,7 +1,6 @@
 import sys
-import pysqlite3
-sys.modules["sqlite3"] = pysqlite3
-
+# import pysqlite3
+# sys.modules["sqlite3"] = pysqlite3
 import os
 import sys
 import polars as pl
@@ -82,8 +81,6 @@ else:
 
 # --- Global variables that your tools will import ---
 df, chroma_collection = load_resources()
-
-
 
 # import os
 # from lib.utils import CHROMA_COLLECTION_NAME, EMAIL_JSON_PATH

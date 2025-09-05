@@ -25,9 +25,10 @@ import polars as pl
 #     | ChatOpenAI(model=AGENT_MODEL, temperature=0) | StrOutputParser()
 # )
 
+#   id (str, optional): Unique mail id (fastest lookup if present).
+
 @tool("conversation_retriever_tool", parse_docstring=True)
 def conversation_retriever_tool(
-    id: str = None,
     subject: str = None,
     sender: str = None,
     recipient: str = None,
@@ -38,7 +39,6 @@ def conversation_retriever_tool(
     It will try to resolve the unique thread using id, or a combination of filters.
 
     Args:
-        id (str, optional): Unique mail id (fastest lookup if present).
         subject (str, optional): Email subject (supports partial match).
         sender (str, optional): Email address or name of sender (case-insensitive).
         recipient (str, optional): Email address or name of recipient (case-insensitive).
@@ -47,12 +47,12 @@ def conversation_retriever_tool(
     Returns:
         str: Full conversation history including metadata and email content.
     """
-    print(f"conversation_retriever_tool is being called {id}, {subject}, {sender}, {recipient}, {cc}")
+    print(f"conversation_retriever_tool is being called {subject}, {sender}, {recipient}, {cc}")
     temp_df = df.clone()
     mask = pl.lit(True)
 
-    if id:
-        mask = mask & (pl.col("id") == id)
+    # if id:
+    #     mask = mask & (pl.col("id") == id)
 
     if sender:
         sender = sender.lower()
