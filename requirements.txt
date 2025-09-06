@@ -40,3 +40,4 @@ polars
 rapidfuzz
 pysqlite3-binary
 vaderSentiment
+rank_bm25
