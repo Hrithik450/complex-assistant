@@ -4,16 +4,17 @@
 import os
 import sys
 
-# Streamlit Cloud sets the 'STREAMLIT_SERVER_PORT' environment variable.
-# We can use its presence to detect the cloud environment.
-if 'STREAMLIT_SERVER_PORT' in os.environ:
-    print("Streamlit Cloud environment detected. Applying sqlite3 patch.")
+# --- THIS IS THE NEW, ROBUST FIX ---
+# This ensures the patch runs before chromadb is ever touched.
+IS_STREAMLIT_ENVIRONMENT = "streamlit" in sys.modules
+if IS_STREAMLIT_ENVIRONMENT:
+    print("Streamlit environment detected. Applying sqlite3 patch in load_data.py.")
     try:
         __import__('pysqlite3')
         sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
         print("Successfully patched sqlite3.")
     except ImportError:
-        print("pysqlite3-binary not found, skipping patch. This may cause issues on Streamlit Cloud.")
+        print("pysqlite3-binary not found, skipping patch.")
 # --- END OF FIX ---
 
 import streamlit as st
