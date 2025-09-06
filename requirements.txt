@@ -39,3 +39,4 @@ redis
 polars
 rapidfuzz
 pysqlite3-binary
+vaderSentiment
