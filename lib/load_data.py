@@ -84,7 +84,7 @@ else:
         return _load_resources_base()
 
 # --- Global variables that your tools will import ---
-df, chroma_collection = load_resources()
+df, chroma_collection= load_resources()
 
 # import os
 # from lib.utils import CHROMA_COLLECTION_NAME, EMAIL_JSON_PATH

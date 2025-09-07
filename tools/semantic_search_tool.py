@@ -2,17 +2,18 @@
 from lib.load_data import chroma_collection
 from langchain.tools import tool
 from langchain_openai import OpenAIEmbeddings # <-- 1. IMPORT THE CORRECT EMBEDDING CLIENT
-from lib.utils import EMBEDDING_MODEL_NAME, AGENT_MODEL
+from lib.utils import AGENT_MODEL, EMBEDDING_MODEL_NAME
 from langchain.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain_openai import ChatOpenAI
 from sentence_transformers import CrossEncoder
 from rank_bm25 import BM25Okapi
 import numpy as np
+import os
 
 # --- Heavy initializations ---
-# 1. Embedding function
-embedding_function = OpenAIEmbeddings(model=EMBEDDING_MODEL_NAME)
+# 1. Embedding function with batching ---
+embedding_model = OpenAIEmbeddings(model=EMBEDDING_MODEL_NAME, api_key=os.getenv("OPENAI_API_KEY"))
 
 # 2. BM25 (An superfast algo which focus more on imp key words to retrieve relavant docs) - will need documents loaded once
 if chroma_collection is not None:
@@ -23,6 +24,7 @@ if chroma_collection is not None:
     bm25 = BM25Okapi(tokenized_docs)
     # Mapping: doc text -> index
     doc_to_index = {doc: i for i, doc in enumerate(documents)}
+    index_to_doc = {i: doc for doc, i in doc_to_index.items()}
 else:
     documents = []
     tokenized_docs = []
@@ -73,21 +75,27 @@ def semantic_search_tool(query: str) -> str:
     for q in expanded_queries:
         bm25_scores = bm25.get_scores(q.lower().split())
         bm25_scores = np.array(bm25_scores) / (np.max(bm25_scores)+1e-6)
+        top_bm25_indices = np.argsort(bm25_scores)[-20:][::-1]
+        top_bm25_docs = [(index_to_doc[i], bm25_scores[i]) for i in top_bm25_indices]
         
         # Create embeddings for query and filter candidate docs
-        query_embedding = embedding_function.embed_query(q)
+        query_embedding = embedding_model.embed_query(q)
         search_results = chroma_collection.query(query_embeddings=[query_embedding])
 
         # Chroma returns lists inside lists (one per query)
-        docs = search_results["documents"][0]
-        dists = search_results["distances"][0]
+        sem_docs = search_results["documents"][0]
+        sem_scores = search_results["distances"][0]
 
-        for i, doc in enumerate(docs):
+        for i, doc in enumerate(sem_docs):
             bm25_index = doc_to_index.get(doc, None)
             bm25_score = bm25_scores[bm25_index] if bm25_index is not None else 0
-            dense_score = dists[i]
+            dense_score = sem_scores[i]
             combined_score = 0.5 * bm25_score + 0.5 * dense_score
             all_results.append((doc, combined_score))
+
+        for doc, bm25_score in top_bm25_docs:
+            if doc not in sem_docs:
+                all_results.append((doc, bm25_score))
 
     # Deduplicate (get_unique_union effect)
     unique_results = {}
