@@ -7,8 +7,8 @@ import re
 BASE_DIR = os.path.dirname(__file__)  # current file directory
 # VECTOR_DATA_PATH = os.path.join(BASE_DIR, "data", "emails_faiss_oaite_2.35G.bin")
 # CHROMA_COLLECTION_NAME = "organization_docs"
-CHROMA_COLLECTION_NAME = "organization_data"
-# CHROMA_COLLECTION_NAME = "my_document_collection"
+# CHROMA_COLLECTION_NAME = "organization_data"
+CHROMA_COLLECTION_NAME = "my_document_collection"
 EMAIL_JSON_PATH = os.path.join(BASE_DIR, "data", "full_mails.jsonl")
 PICKLE_FILE_PATH = os.path.join(BASE_DIR, "data", "optimized_chunks.pkl")
 EMBEDDING_MODEL_NAME = "text-embedding-3-large"
