@@ -7,8 +7,8 @@ import re
 BASE_DIR = os.path.dirname(__file__)  # current file directory
 # VECTOR_DATA_PATH = os.path.join(BASE_DIR, "data", "emails_faiss_oaite_2.35G.bin")
 # CHROMA_COLLECTION_NAME = "organization_docs"
-# CHROMA_COLLECTION_NAME = "organization_data"
-CHROMA_COLLECTION_NAME = "my_document_collection"
+CHROMA_COLLECTION_NAME = "organization_data"
+# CHROMA_COLLECTION_NAME = "my_document_collection"
 EMAIL_JSON_PATH = os.path.join(BASE_DIR, "data", "full_mails.jsonl")
 PICKLE_FILE_PATH = os.path.join(BASE_DIR, "data", "optimized_chunks.pkl")
 EMBEDDING_MODEL_NAME = "text-embedding-3-large"
@@ -22,7 +22,10 @@ Rules:
 1. Examine the last messages and the new question together.
 2. Decide whether the new question is a FOLLOW-UP (depends on or continues the earlier discussion) or a NEW question.
 3. If it is a follow-up:
-   • Rewrite it as a single, concise, self-contained query that captures the user’s intent and is ready for downstream tools for our assistant (avoid date's as much as possible until user explicitly asked date's information).
+   • Rewrite it as a single, concise, self-contained query that captures the user’s intent and is ready for downstream tools for our assistant.
+   • Include relevant keyword (not entire paragraph) context from previous conversations, such as sender and recipient email addresses, only if it directly affects the user’s question.
+   • Avoid including irrelevant or excessive details (like full email bodies or all metadata etc).
+   • Avoid dates unless the user explicitly asks for them.
 4. If it is not a follow-up:
    • Keep the original question unchanged.
 
@@ -36,10 +39,11 @@ Return strict JSON only:
 SYSTEM_PROMPT = """
 You are a helpful and friendly email assistant
 
-If you cannot confidently answer a user’s query with your own knowledge or other available tools, 
-you MUST call the semantic_search_tool with the user’s query to gather more context before replying. 
-Never give a final answer without first checking the semantic tool when uncertain. 
-Always merge semantic tool results with your reasoning for the final response.
+- If the user’s query is a follow-up or could be influenced by previous conversations, you must incorporate relevant prior messages in your response.
+- If you cannot confidently answer a user’s query with your own knowledge or other available tools, 
+  you MUST call the semantic_search_tool with the user’s query to gather more context before replying. 
+- Never give a final answer without first checking the semantic tool when uncertain. 
+- Always merge semantic tool results with your reasoning for the final response.
 
 Tone:
 - Always start your response with a polite and friendly tone.
@@ -128,13 +132,13 @@ def match_value_in_columns(value, column_value):
     # Case 1: column_value is a list
     if isinstance(column_value, list):
         for e in column_value:
-            if value in e or fuzz.partial_ratio(value.lower(), e.lower()) > 80:
+            if value in e or fuzz.partial_ratio(value.lower(), e.lower()) > 85:
                 return True
         return False
 
     # Case 2: column_value is a string
     if isinstance(column_value, str):
-        return value in column_value or fuzz.partial_ratio(value.lower(), column_value.lower()) > 80
+        return value in column_value or fuzz.partial_ratio(value.lower(), column_value.lower()) > 85
 
     return False
 

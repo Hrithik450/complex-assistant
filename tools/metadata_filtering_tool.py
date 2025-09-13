@@ -66,8 +66,7 @@ def email_filtering_tool(
         ])
         # Filter rows where any normalized 'to' or 'cc' matches the recipient
         recipient_mask = (
-            pl.col("to_normalized").map_elements(lambda x: match_value_in_columns(recipient, x), return_dtype=bool) |
-            pl.col("cc_normalized").map_elements(lambda x: match_value_in_columns(recipient, x), return_dtype=bool)
+            pl.col("to_normalized").map_elements(lambda x: match_value_in_columns(recipient, x), return_dtype=bool)
         )
         mask = mask & recipient_mask
 

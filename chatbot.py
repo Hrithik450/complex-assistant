@@ -168,7 +168,7 @@ async def chat_loop(user_id: str) -> None:
             internal_message = user_input
 
         # Prepare initial state
-        print(*last_msgs[-5:], "last 5 conver")
+        print(last_msgs[-5:])
         initial_state: Dict[str, Any] = {
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT.format(today_date=today_date)},
