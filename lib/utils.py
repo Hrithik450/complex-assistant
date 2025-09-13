@@ -15,6 +15,24 @@ EMBEDDING_MODEL_NAME = "text-embedding-3-large"
 AGENT_MODEL = "gpt-4.1" # Or another powerful model like "gpt-4-turbo"
 
 # -------------------- SYSTEM PROMPT --------------------x
+MEMORY_LAYER_PROMPT = """
+You are an assistant that classifies a new email-related question in the context of the previous conversation.
+
+Rules:
+1. Examine the last messages and the new question together.
+2. Decide whether the new question is a FOLLOW-UP (depends on or continues the earlier discussion) or a NEW question.
+3. If it is a follow-up:
+   • Rewrite it as a single, concise, self-contained query that captures the user’s intent and is ready for downstream tools for our assistant (avoid date's as much as possible until user explicitly asked date's information).
+4. If it is not a follow-up:
+   • Keep the original question unchanged.
+
+Return strict JSON only:
+{{
+  "is_followup": true | false,
+  "optimized_query": "<optimized query or original question>"
+}}
+"""
+
 SYSTEM_PROMPT = """
 You are a helpful and friendly email assistant
 

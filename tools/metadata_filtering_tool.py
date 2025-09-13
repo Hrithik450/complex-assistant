@@ -10,9 +10,12 @@ def email_filtering_tool(
     sender: str = None,
     recipient: str = None,
     subject: str = None,
+    cc: bool = False,
     labels: list[str] = None,
     start_date: str = None,
     end_date: str = None,
+    body: bool = False,
+    html: bool = False,
     sort_by: str = "date",
     sort_order: str = "desc",
     limit: int = 5
@@ -25,9 +28,12 @@ def email_filtering_tool(
         sender (str or list of str, optional): Filter emails by sender(s). Can be full email address, partial email, or sender names (case-insensitive, only humans).
         recipient (str or list of str, optional): Filter emails by recipient(s). Can be full email addresses, partial emails, or recipient names, but strictly not numbers. (case-insensitive, only humans).
         subject (str, optional): Filter email by subject text. Can be full or partial subject string (case-insensitive).
+        cc (bool, optional): Filter cc recepients of the email only when explicitly requested. Default False.
         labels (list of str, optional): Filter emails by one or more labels. Matches any email that contains at least one of the provided labels (case-insensitive).
         start_date (str, optional): Filter emails sent on or after this date. Format: 'YYYY-MM-DD' or 'YYYY-MM-DD HH:MM:SS'.
         end_date (str, optional): Filter emails sent on or before this date. Format: 'YYYY-MM-DD' or 'YYYY-MM-DD HH:MM:SS'.
+        body (bool, optional): Include the plain-text email body only when explicitly requested. Default False.
+        html (bool, optional): Include the full HTML body only when explicitly requested. Default False.
         sort_by (str, optional): Column to sort the results by. Default is 'date'.
         sort_order (str, optional): Sort order: 'asc' for ascending, 'desc' for descending. Default is 'desc'.
         limit (int, optional): Maximum number of results to return. Default is 10.
@@ -56,8 +62,7 @@ def email_filtering_tool(
         recipient = recipient.lower()
         # Normalize 'to' and 'cc' columns which are lists
         temp_df = temp_df.with_columns([
-            pl.col("to").map_elements(normalize_list, return_dtype=str).alias("to_normalized"),
-            pl.col("cc").map_elements(normalize_list, return_dtype=str).alias("cc_normalized")
+            pl.col("to").map_elements(normalize_list, return_dtype=str).alias("to_normalized")
         ])
         # Filter rows where any normalized 'to' or 'cc' matches the recipient
         recipient_mask = (
@@ -66,6 +71,17 @@ def email_filtering_tool(
         )
         mask = mask & recipient_mask
 
+    if cc:
+        # Normalize 'to' and 'cc' columns which are lists
+        temp_df = temp_df.with_columns([
+            pl.col("cc").map_elements(normalize_list, return_dtype=str).alias("cc_normalized")
+        ])
+        # Filter rows where any normalized 'to' or 'cc' matches the recipient
+        cc_mask = (
+            pl.col("cc_normalized").map_elements(lambda x: match_value_in_columns(recipient, x), return_dtype=bool)
+        )
+        mask = mask & cc_mask
+
     # --- Date filtering (normalize to datetime) ---
     if start_date or end_date:
         temp_df = temp_df.with_columns([
@@ -73,15 +89,15 @@ def email_filtering_tool(
         ])
         
     if start_date:
-        start_date_dt = datetime.strptime(start_date, "%Y-%m-%d")
         try:
+            start_date_dt = datetime.strptime(start_date, "%Y-%m-%d")
             mask = mask & (pl.col("date_dt") >= start_date_dt)
         except Exception as e:
             return f"Error parsing start_date: {e}"
 
     if end_date:
-        end_date_dt = datetime.strptime(end_date, "%Y-%m-%d")
         try:
+            end_date_dt = datetime.strptime(end_date, "%Y-%m-%d")
             mask = mask & (pl.col("date_dt") <= end_date_dt)
         except Exception as e:
             return f"Error parsing end_date: {e}"
@@ -117,25 +133,33 @@ def email_filtering_tool(
     if temp_df.is_empty():
         return "No emails found matching the specified criteria."
 
-    # --- Total count ---
-    total_matches = temp_df.height
-
     # --- Preview results ---
-    results_preview = temp_df.head(limit).select(['id', 'from', 'to', 'subject', 'date', 'cc', 'snippet', 'body', 'labels', 'attachments']).to_dicts()
+    total_matches = temp_df.height
+    preview_cols = ["id", "from", "to", "subject", "date", "cc", "snippet", "labels", "attachments"]
+    if body:
+        preview_cols.append("body")
+    if html:
+        preview_cols.append("html")
 
-    formatted_results = "\n\n---\n\n".join([
-        f"id: {res.get('id', 'N/A')}\n"
-        f"From: {res.get('from', 'N/A')}\n"
-        f"To: {res.get('to', 'N/A')}\n"
-        f"CC: {res.get('cc', 'N/A')}\n"
-        f"Subject: {res.get('subject', 'N/A')}\n"
-        f"Date: {res.get('date', 'N/A')}\n"
-        f"Snippet: {res.get('snippet', 'N/A')}\n"
-        f"Body:\n{res.get('body', 'N/A')}\n"
-        f"Labels: {res.get('labels', 'N/A')}\n"
-        f"Attachments: {res.get('attachments', 'N/A')}\n"
-        for res in results_preview
-    ])
+    results_preview = temp_df.head(limit).select(preview_cols).to_dicts()
 
-    # print(formatted_results, "formatted_results from metadata_filtering_tool")
-    return f"Found a total of {total_matches} emails matching the criteria. Here are the {min(limit, total_matches)} most relevant:\n\n{formatted_results}"
+    def fmt(res):
+        parts = [
+            f"id: {res.get('id','N/A')}",
+            f"From: {res.get('from','N/A')}",
+            f"To: {res.get('to','N/A')}",
+            f"CC: {res.get('cc','N/A')}",
+            f"Subject: {res.get('subject','N/A')}",
+            f"Date: {res.get('date','N/A')}",
+            f"Snippet: {res.get('snippet','N/A')}",
+            f"Labels: {res.get('labels','N/A')}",
+            f"Attachments: {res.get('attachments','N/A')}",
+        ]
+        if body:
+            parts.append(f"Body:\n{res.get('body','N/A')}")
+        if html:
+            parts.append(f"HTML:\n{res.get('html','N/A')}")
+        return "\n".join(parts)
+
+    formatted_results = "\n\n---\n\n".join(fmt(r) for r in results_preview)
+    return f"Found {total_matches} emails matching the criteria. Showing {min(limit, total_matches)}:\n\n{formatted_results}"

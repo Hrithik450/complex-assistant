@@ -56,7 +56,7 @@ class ThreadService():
             FROM thread_messages
             WHERE thread_id = %s 
             ORDER BY created_at DESC
-            LIMIT 5
+            LIMIT 10
         """, (thread_id,))
         rows = cursor.fetchall()
 
@@ -71,15 +71,33 @@ class ThreadService():
         return {"messages": messages}
     
     def put_thread_message(self, thread_id, new_messages):
+        """
+        Insert one or many messages for a given thread.
+
+        new_messages can be:
+        • a dict: {"role": "...", "content": "..."}
+        • a list of dicts: [{"role": "...", "content": "..."}, ...]
+        """
+        # Normalize to a list so we can iterate
+        if isinstance(new_messages, dict):
+            messages_to_insert = [new_messages]
+        else:
+            # Ensure we keep the order that was passed in
+            messages_to_insert = list(new_messages)
+
         cursor = self.conn.cursor()
-        for msg in new_messages:
-            cursor.execute("""
+        for msg in messages_to_insert:
+            cursor.execute(
+                """
                 INSERT INTO thread_messages (thread_id, role, content)
                 VALUES (%s, %s, %s)
-            """, (thread_id, msg["role"], msg["content"]))
+                """,
+                (thread_id, msg["role"], msg["content"]),
+            )
+
         self.conn.commit()
 
-        # Update Redis cache
+        # Invalidate Redis cache so next read hits DB
         cache_key = f"thread:{thread_id}:thread_messages"
         self.redis.delete(cache_key)
 
