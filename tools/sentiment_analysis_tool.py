@@ -145,4 +145,3 @@ def sentiment_analysis_tool(
             f"- Neutral Emails: {counts.get('Neutral', 0)}"
         )
         return summary
-    

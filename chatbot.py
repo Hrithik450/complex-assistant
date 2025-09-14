@@ -120,7 +120,6 @@ async def reframe_user_query(user_input: str, last_messages: List[dict]) -> dict
     try:
         result = parse_json(raw_response)
     except (json.JSONDecodeError, TypeError) as e:
-        print("JSON parse failed:", e)
         result = {
             "is_followup": False,
             "optimized_query": user_input,
@@ -158,7 +157,7 @@ async def chat_loop(user_id: str) -> None:
 
         last_msgs = memory.get_thread_messages(thread_id).get("messages", [])
         reframed = await reframe_user_query(user_input, last_msgs)
-        print(reframed, 'refremaed')
+        print(reframed, 'reframed')
 
         if reframed["is_followup"]:
             internal_message = {
@@ -168,7 +167,6 @@ async def chat_loop(user_id: str) -> None:
             internal_message = user_input
 
         # Prepare initial state
-        print(last_msgs[-5:])
         initial_state: Dict[str, Any] = {
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT.format(today_date=today_date)},
