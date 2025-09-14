@@ -68,18 +68,18 @@ def email_filtering_tool(
         recipient_mask = (
             pl.col("to_normalized").map_elements(lambda x: match_value_in_columns(recipient, x), return_dtype=bool)
         )
-        mask = mask & recipient_mask
+        if cc:
+            # Normalize 'to' and 'cc' columns which are lists
+            temp_df = temp_df.with_columns([
+                pl.col("cc").map_elements(normalize_list, return_dtype=str).alias("cc_normalized")
+            ])
+            # Filter rows where any normalized 'to' or 'cc' matches the recipient
+            cc_mask = (
+                pl.col("cc_normalized").map_elements(lambda x: match_value_in_columns(recipient, x), return_dtype=bool)
+            )
+            recipient_mask = recipient_mask | cc_mask
 
-    if cc:
-        # Normalize 'to' and 'cc' columns which are lists
-        temp_df = temp_df.with_columns([
-            pl.col("cc").map_elements(normalize_list, return_dtype=str).alias("cc_normalized")
-        ])
-        # Filter rows where any normalized 'to' or 'cc' matches the recipient
-        cc_mask = (
-            pl.col("cc_normalized").map_elements(lambda x: match_value_in_columns(recipient, x), return_dtype=bool)
-        )
-        mask = mask & cc_mask
+        mask = mask & recipient_mask
 
     # --- Date filtering (normalize to datetime) ---
     if start_date or end_date:
