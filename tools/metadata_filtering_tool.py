@@ -7,6 +7,7 @@ import polars as pl
 @tool("email_filtering_tool", parse_docstring=True)
 def email_filtering_tool(
     uid: str = None,
+    threadId: str = None,
     sender: str = None,
     recipient: str = None,
     subject: str = None,
@@ -25,6 +26,7 @@ def email_filtering_tool(
     
     Args:
         uid (str, optional): Filter emails by their unique UID. Exact match required.
+        threadId: Filter emails by their conversation (email chian) thread ID, Returns all messages belonging to that specific chain (thread).
         sender (str or list of str, optional): Filter emails by sender(s). Can be full email address, partial email, or sender names (case-insensitive, only humans).
         recipient (str or list of str, optional): Filter emails by recipient(s). Can be full email addresses, partial emails, or recipient names, but strictly not numbers. (case-insensitive, only humans).
         subject (str, optional): Filter email by subject text. Can be full or partial subject string (case-insensitive).
@@ -39,12 +41,15 @@ def email_filtering_tool(
         limit (int, optional): Maximum number of results to return. Default is 10.
     """
 
-    print(f"email_filtering_tool is being called {uid}, {sender}, {recipient}, {subject}, {labels}, {start_date}, {end_date}, {sort_by}, {sort_order}, {limit}")
+    print(f"email_filtering_tool is being called {uid}, {threadId}, {sender}, {recipient}, {subject}, {labels}, {start_date}, {end_date}, {sort_by}, {sort_order}, {limit}")
     temp_df = df.clone()
     mask = pl.lit(True)
 
     if uid:
         mask = mask & (pl.col("id") == uid)
+
+    if threadId:
+        mask = mask & (pl.col("threadId") == threadId)
     
     # --- Sender filter (case-insensitive, matches name or email) ---
     if sender:
@@ -134,7 +139,7 @@ def email_filtering_tool(
 
     # --- Preview results ---
     total_matches = temp_df.height
-    preview_cols = ["id", "from", "to", "subject", "date", "cc", "snippet", "labels", "attachments"]
+    preview_cols = ["id", "threadId", "from", "to", "subject", "date", "cc", "snippet", "labels", "attachments"]
     if body:
         preview_cols.append("body")
     if html:
@@ -145,6 +150,7 @@ def email_filtering_tool(
     def fmt(res):
         parts = [
             f"id: {res.get('id','N/A')}",
+            f"ThreadId: {res.get('threadId','N/A')}",
             f"From: {res.get('from','N/A')}",
             f"To: {res.get('to','N/A')}",
             f"CC: {res.get('cc','N/A')}",

@@ -56,19 +56,22 @@ tool_node = ToolNode(tools)
 base_model = init_chat_model(model=AGENT_MODEL, temperature=0)
 model_with_tools = base_model.bind_tools(tools)
 
-llm = ChatOpenAI(model="gpt-4o", temperature=0)  # for small helper tasks
+llm = init_chat_model(model=AGENT_MODEL, temperature=0)
+llm_with_tools = llm.bind_tools(tools)  # for small helper tasks
 
 # ============================================================
 # HELPER FUNCTIONS
 # ============================================================
 async def call_llm(system_prompt: str, user_prompt: str) -> str:
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", system_prompt),
-        ("user", user_prompt),
-    ])
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt}
+    ]
 
-    chain = prompt | llm
-    response = await chain.ainvoke({})
+    # invoke expects a list of message dicts (or LangChain Message objects)
+    response = await llm_with_tools.ainvoke(messages)
+
+    # response is an AIMessage object
     return response.content
 
 def call_model(state: MessagesState) -> MessagesState:
@@ -123,6 +126,7 @@ async def reframe_user_query(user_input: str, last_messages: List[dict]) -> dict
         result = {
             "is_followup": False,
             "optimized_query": user_input,
+            "selected_tools": []
         }
 
     return result
