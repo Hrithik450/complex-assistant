@@ -17,6 +17,10 @@ if IS_STREAMLIT_ENVIRONMENT:
         print("pysqlite3-binary not found, skipping patch.")
 # --- END OF FIX ---
 
+import re
+import json
+import asyncio
+from typing import List, Dict, Any, Optional
 import streamlit as st
 st.set_page_config(page_title="AI Email Assistant", page_icon="📧")
 import pytz
@@ -44,6 +48,11 @@ from lib.load_data import df, chroma_collection
 from lib.db.db_service import ThreadService
 from lib.db.db_conn import conn
 
+from langchain.prompts import ChatPromptTemplate
+from langchain_openai import ChatOpenAI
+from langchain_core.output_parsers import StrOutputParser
+from lib.utils import MEMORY_LAYER_PROMPT
+
 # -------------------- CONFIG --------------------
 IST = pytz.timezone("Asia/Kolkata")
 today_date = datetime.now(IST).strftime("%B %d, %Y")
@@ -51,6 +60,49 @@ USER_ID = "63f05e7a-35ac-4deb-9f38-e2864cdf3a1d" # Hardcoded for this example
 
 # -------------------- CACHED RESOURCES --------------------
 @st.cache_resource
+def get_helper_llm():
+    """Initializes a separate, cached LLM for helper tasks like query reframing."""
+    return ChatOpenAI(model="gpt-4o", temperature=0, api_key=st.secrets["OPENAI_API_KEY"])
+
+async def call_llm(system_prompt: str, user_prompt: str) -> str:
+    """Async helper to call the LLM."""
+    llm = get_helper_llm()
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", system_prompt),
+        ("user", user_prompt),
+    ])
+    chain = prompt | llm | StrOutputParser()
+    response = await chain.ainvoke({})
+    return response
+
+def parse_json(raw_response):
+    """Safely parses a JSON object from a string."""
+    if not raw_response:
+        return None
+    match = re.search(r'\{.*\}', raw_response, re.S)
+    if match:
+        return json.loads(match.group(0))
+    return None
+
+async def reframe_user_query(user_input: str, last_messages: list) -> dict:
+    """
+    Analyzes user input in the context of the conversation to create an optimized query.
+    """
+    context = "\n".join(
+        [f"{msg['role'].capitalize()}: {msg['content']}" for msg in last_messages]
+    )
+    user_prompt = f"Conversation context:\n{context}\n\nNew user question:\n{user_input}"
+    
+    raw_response = await call_llm(MEMORY_LAYER_PROMPT, user_prompt)
+    try:
+        result = parse_json(raw_response)
+        if result is None: # Handle cases where JSON isn't found
+            raise json.JSONDecodeError("No JSON found", raw_response, 0)
+    except (json.JSONDecodeError, TypeError):
+        result = {"is_followup": False, "optimized_query": user_input}
+        
+    return result
+
 def get_memory():
     """Initializes and returns the Redis client and ThreadService."""
     redis_client = redis.from_url(st.secrets["REDIS_URL"], decode_responses=True)
@@ -175,29 +227,45 @@ for message in st.session_state.messages:
 
 # Accept user input
 if prompt := st.chat_input("Ask a question about your emails..."):
-    # Add user message to chat history
+    # Add user's original message to chat history and display it
     st.session_state.messages.append({"role": "user", "content": prompt})
-    # Display user message in chat message container
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # Display assistant response in chat message container
+    # Display assistant response
     with st.chat_message("assistant"):
         with st.spinner("Thinking..."):
-            # Construct the input for the agent
-            # Note: We are not using the database/redis memory here for simplicity in Streamlit,
-            # but using the session state history instead.
-            # chat_history_for_agent = [msg for msg in st.session_state.messages if msg["role"] != "system"]
+            # --- NEW LOGIC: Reframe the query before calling the agent ---
+            
+            # 1. Get the recent message history for context
+            history_for_reframing = st.session_state.messages[:-1] # Exclude the latest prompt
 
+            # 2. Run the async reframing function
+            # We use asyncio.run() to call our async helper from Streamlit's sync context
+            reframed = asyncio.run(reframe_user_query(prompt, history_for_reframing))
+            
+            # (Optional) Display the reframed query for debugging
+            if reframed["is_followup"]:
+                st.info(f"Continuing conversation with query: `{reframed['optimized_query']}`")
+
+            # 3. Prepare the message for the agent based on the reframing result
+            if reframed["is_followup"]:
+                internal_message = {"query": reframed["optimized_query"]}
+            else:
+                internal_message = {"query": prompt} # Send as JSON even if not a followup for consistency
+
+            # 4. Construct the input for the agent
             initialState = {
                 "messages": [
                     {"role": "system", "content": SYSTEM_PROMPT.format(today_date=today_date)},
-                    *st.session_state.messages,
+                    # We still provide the full history to the agent for its own context
+                    *st.session_state.messages[:-1], 
+                    # The final user message is the structured JSON query
+                    {"role": "user", "content": json.dumps(internal_message)}
                 ]
             }
             
-            # Invoke the agent to get the final response
-            # .invoke is synchronous and simpler for a direct request-response in Streamlit
+            # 5. Invoke the agent to get the final response
             final_state = email_agent_graph.invoke(initialState)
             agent_answer = final_state["messages"][-1].content
             
@@ -206,7 +274,7 @@ if prompt := st.chat_input("Ask a question about your emails..."):
     # Add assistant response to chat history
     st.session_state.messages.append({"role": "assistant", "content": agent_answer})
 
-    # Save the new messages to the database
+    # Save the user's original prompt and the agent's answer to the database
     memory.put_thread_message(st.session_state.thread_id, [
         {"role": "user", "content": prompt},
         {"role": "assistant", "content": agent_answer}
