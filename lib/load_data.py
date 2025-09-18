@@ -17,7 +17,6 @@ import json
 # This check remains the same and is the key to the solution.
 IS_STREAMLIT_ENVIRONMENT = "streamlit" in sys.modules
 
-<<<<<<< Updated upstream
 # If in Streamlit, we'll need its special functions.
 if IS_STREAMLIT_ENVIRONMENT:
     import streamlit as st
@@ -152,9 +151,3 @@ df, chroma_collection, token_map = load_resources()
 #     pl.col("date").str.strptime(pl.Datetime, format="%Y-%m-%d %H:%M:%S", strict=False).dt.replace_time_zone("UTC").alias("date")
 # )
 # print(f"Successfully loaded {df.height} records for metadata.")
-=======
-# Load the email jsonl data
-print("Loading emails data-set")
-df = pl.read_ndjson(EMAIL_JSON_PATH)
-print(f"Successfully loaded {df.height} records.")
->>>>>>> Stashed changes
