@@ -35,9 +35,11 @@ def _load_resources_base():
         print("Streamlit environment detected. Will download data from Google Drive.")
         output_path_mails = "all_mails.jsonl"
         output_path_token_map = "token_map.jsonl"
-        if not os.path.exists(output_path):
+        if not os.path.exists(output_path_mails):
             with st.spinner("Downloading metadata from Google Drive (first-time setup)..."):
                 gdown.download(id=st.secrets["EMAIL_JSONL_GDRIVE_ID"], output=output_path_mails, quiet=False)
+        if not os.path.exists(output_path_token_map):
+            with st.spinner("Downloading metadata from Google Drive (first-time setup)..."):
                 gdown.download(id=st.secrets["TOKEN_MAP_GDRIVE_ID"], output=output_path_token_map, quiet=False)
         
         data_path = output_path_mails
