@@ -161,7 +161,6 @@ async def chat_loop(user_id: str) -> None:
 
         last_msgs = memory.get_thread_messages(thread_id).get("messages", [])
         reframed = await reframe_user_query(user_input, last_msgs)
-        print(reframed, 'reframed')
 
         if reframed["is_followup"]:
             internal_message = {
@@ -171,12 +170,14 @@ async def chat_loop(user_id: str) -> None:
         else:
             internal_message = user_input
 
+        print(json.dumps(internal_message), 'optimized query')
+
         # Prepare initial state
         initial_state: Dict[str, Any] = {
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT.format(today_date=today_date)},
                 *last_msgs[-5:],
-                {"role": "user", "content": "optimized_query " + json.dumps(internal_message)}
+                {"role": "user", "content": "optimized_query: " + json.dumps(internal_message)}
             ]
         }
 
