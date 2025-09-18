@@ -1,7 +1,7 @@
-from lib.utils import normalize_list, match_value_in_columns
+from lib.utils import normalize_list, match_value_in_columns, smart_subject_match, get_best_match_from_token_map
+from lib.load_data import df, token_map
 from langchain.tools import tool
-from datetime import datetime
-from lib.load_data import df
+from datetime import datetime, timedelta
 import polars as pl
 
 @tool("email_filtering_tool", parse_docstring=True)
@@ -41,7 +41,7 @@ def email_filtering_tool(
         limit (int, optional): Maximum number of results to return. Default is 10.
     """
 
-    print(f"email_filtering_tool is being called {uid}, {threadId}, {sender}, {recipient}, {subject}, {labels}, {start_date}, {end_date}, {sort_by}, {sort_order}, {limit}")
+    print(f"email_filtering_tool is being called {uid}, {threadId}, {sender}, {recipient}, {subject}, {cc}, {labels}, {start_date}, {end_date}, {body}, {html}, {sort_by}, {sort_order}, {limit}")
     temp_df = df.clone()
     mask = pl.lit(True)
 
@@ -54,6 +54,11 @@ def email_filtering_tool(
     # --- Sender filter (case-insensitive, matches name or email) ---
     if sender:
         sender = sender.lower()
+        response = get_best_match_from_token_map(sender, token_map, threshold=75)
+        print(response, "optimized sender")
+        if response:
+            best_full_name, _ = response
+            sender = best_full_name
         # Add a normalized column
         temp_df = temp_df.with_columns([
             pl.col("from").map_elements(normalize_list, return_dtype=str).alias("from_normalized")
@@ -65,6 +70,11 @@ def email_filtering_tool(
     # --- Recipient filter ---
     if recipient:
         recipient = recipient.lower()
+        response = get_best_match_from_token_map(recipient, token_map, threshold=75)
+        print(response, "optimized recipient")
+        if response:
+            best_full_name, _ = response
+            recipient = best_full_name
         # Normalize 'to' and 'cc' columns which are lists
         temp_df = temp_df.with_columns([
             pl.col("to").map_elements(normalize_list, return_dtype=str).alias("to_normalized")
@@ -101,7 +111,7 @@ def email_filtering_tool(
 
     if end_date:
         try:
-            end_date_dt = datetime.strptime(end_date, "%Y-%m-%d")
+            end_date_dt = datetime.strptime(end_date, "%Y-%m-%d") + timedelta(days=1) - timedelta(seconds=1)
             mask = mask & (pl.col("date_dt") <= end_date_dt)
         except Exception as e:
             return f"Error parsing end_date: {e}"
@@ -120,8 +130,8 @@ def email_filtering_tool(
 
         mask = mask & labels_mask
 
-    if subject:
-        subject_mask = pl.col("subject").map_elements(lambda x: match_value_in_columns(subject, x), return_dtype=bool)
+    if subject:    
+        subject_mask = pl.col("subject").map_elements(lambda x: smart_subject_match(subject, x) or match_value_in_columns(subject, x), return_dtype=bool)
         mask = mask & subject_mask
 
     # Apply the mask only once

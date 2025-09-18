@@ -166,6 +166,7 @@ async def chat_loop(user_id: str) -> None:
         if reframed["is_followup"]:
             internal_message = {
                 "query": reframed["optimized_query"],
+                "selected_tools": reframed.get("selected_tools", []),
             }
         else:
             internal_message = user_input
@@ -175,7 +176,7 @@ async def chat_loop(user_id: str) -> None:
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT.format(today_date=today_date)},
                 *last_msgs[-5:],
-                {"role": "user", "content": json.dumps(internal_message)}
+                {"role": "user", "content": "optimized_query " + json.dumps(internal_message)}
             ]
         }
 

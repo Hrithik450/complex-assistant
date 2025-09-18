@@ -8,7 +8,10 @@ import chromadb
 import gdown
 from functools import lru_cache
 from dotenv import load_dotenv
-from lib.utils import CHROMA_COLLECTION_NAME, EMAIL_JSON_PATH
+from lib.utils import CHROMA_COLLECTION_NAME, EMAIL_JSON_PATH, TOKEN_MAP_PATH
+from collections import defaultdict
+from typing import Dict, Set
+import json
 
 # --- Environment Check ---
 # This check remains the same and is the key to the solution.
@@ -26,6 +29,7 @@ def _load_resources_base():
     """
     # --- 1. Conditional Data Source Logic ---
     data_path = ""
+    token_map_path = ""
     if IS_STREAMLIT_ENVIRONMENT:
         # --- STREAMLIT PATH: Download from Google Drive ---
         print("Streamlit environment detected. Will download data from Google Drive.")
@@ -38,9 +42,14 @@ def _load_resources_base():
         # --- COMMAND-LINE PATH: Use local file ---
         print("Command-line environment detected. Using local data file.")
         data_path = EMAIL_JSON_PATH
+        token_map_path = TOKEN_MAP_PATH
         if not os.path.exists(data_path):
             # Provide a clear error if the local file is missing.
             raise FileNotFoundError(f"Local data file not found at '{data_path}'. Please ensure it exists before running chatbot.py.")
+        
+        if not os.path.exists(token_map_path):
+            # Provide a clear error if the local file is missing.
+            raise FileNotFoundError(f"Local data file not found at '{token_map_path}'. Please ensure it exists before running chatbot.py.")
 
     # --- 2. Shared Polars Loading Logic ---
     # This part is now the same for both environments, it just uses the determined data_path.
@@ -69,8 +78,20 @@ def _load_resources_base():
     except Exception as e:
         print(f"FATAL ERROR: Could not connect to ChromaDB. {e}")
         collection = None
+
+    print(f"Loading token_map from {token_map_path}")
+    token_map: Dict[str, Set[str]] = defaultdict(set)
+
+    with open(token_map_path, "r", encoding='utf-8') as f:
+        for line in f:
+            entry = json.loads(line)
+            for token, names in entry.items():
+                token_map[token].update(names)
+
+    token_map = dict(token_map)
+    print("Successfully loaded token map.")
     
-    return df, collection
+    return df, collection, token_map
 
 # --- Environment-Specific Function Wrapper ---
 if IS_STREAMLIT_ENVIRONMENT:
@@ -84,7 +105,7 @@ else:
         return _load_resources_base()
 
 # --- Global variables that your tools will import ---
-df, chroma_collection= load_resources()
+df, chroma_collection, token_map = load_resources()
 
 # import os
 # from lib.utils import CHROMA_COLLECTION_NAME, EMAIL_JSON_PATH
