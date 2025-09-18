@@ -115,6 +115,7 @@ def email_filtering_tool(
             mask = mask & (pl.col("date_dt") <= end_date_dt)
         except Exception as e:
             return f"Error parsing end_date: {e}"
+<<<<<<< Updated upstream
         
     if labels: 
         labels = [lbl.strip().lower() for lbl in labels]
@@ -142,10 +143,16 @@ def email_filtering_tool(
         by=sort_by,
         descending=(sort_order.lower() == "desc")
     )
+=======
+
+    # Apply the mask only once
+    temp_df = temp_df.filter(mask)
+>>>>>>> Stashed changes
 
     # --- Handle empty result ---
     if temp_df.is_empty():
         return "No emails found matching the specified criteria."
+<<<<<<< Updated upstream
 
     # --- Preview results ---
     total_matches = temp_df.height
@@ -154,6 +161,31 @@ def email_filtering_tool(
         preview_cols.append("body")
     if html:
         preview_cols.append("html")
+=======
+
+    # --- Sorting ---
+    ascending = (sort_order.lower() == "asc")
+    if sort_by not in temp_df.columns:
+        sort_by = "date"
+    temp_df = temp_df.sort(sort_by, descending=not ascending)
+
+    # --- Total count ---
+    total_matches = temp_df.height
+
+    # --- Preview results ---
+    results_preview = temp_df.head(limit).select(['threadId', 'from', 'to', 'subject', 'date', 'cc']).to_dicts()
+    print()
+
+    formatted_results = "\n\n---\n\n".join([
+        f"threadId: {res.get('threadId', 'N/A')}\n"
+        f"From: {res.get('from', 'N/A')}\n"
+        f"To: {res.get('to', 'N/A')}\n"
+        f"CC: {res.get('cc', 'N/A')}\n"
+        f"Subject: {res.get('subject', 'N/A')}\n"
+        f"Date: {format_date(res.get('date'))}"
+        for res in results_preview
+    ])
+>>>>>>> Stashed changes
 
     results_preview = temp_df.head(limit).select(preview_cols).to_dicts()
 
