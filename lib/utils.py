@@ -1,11 +1,7 @@
 from typing import Dict, Set, Optional, Tuple
 from rapidfuzz import fuzz, process
-from collections import defaultdict
 from datetime import datetime
-from pathlib import Path
 import polars as pl
-import json
-import math
 import os
 import re
 
@@ -29,7 +25,8 @@ Given the previous conversation and a new user question,
 1. Decide if it is a FOLLOW-UP (depends on prior context) or NEW.
 2. Produce a concise, self-contained query (≤200 chars).
 3. Choose the minimal set of tools and arguments to best satisfy the intent.
-4. Output only valid JSON.
+4. Use semantic search only if the query is vague or lacks metadata, avoid when metadata explicitly provided.
+5. Output only valid JSON.
 
 Output format:
 {{
@@ -43,7 +40,7 @@ Output format:
 Guidelines rules — apply in order:
 0. Avoid date's as much as possible while optimizing the query unless user explicitly asks or provides.
 1. CORE TEST (must pass to be FOLLOW-UP):
-   - Classify as FOLLOW-UP only if the new question **cannot be correctly answered or understood** without the previous messages, OR the user explicitly references the earlier conversation (explicit phrases such as "following up", "same thread", "as I wrote earlier", "in my last message", "regarding my previous email", or "did you see the screenshot I sent?").
+   - Classify as FOLLOW-UP only if the new question **cannot be correctly answered or understood** without the previous messages, OR the user explicitly references the earlier conversation.
    - If the new question can stand alone (it contains all required details to be answered independent of earlier messages), classify as NEW.
 2. PRONOUN / AMBIGUITY CHECK:
    - If the new question uses ambiguous referents (single-word pronouns like "it", "that", "those", or "the file") and the referent is **only** introduced in prior messages, treat as FOLLOW-UP.
@@ -55,20 +52,12 @@ Guidelines rules — apply in order:
    - Include only minimal relevant context keywords from previous conversation (sender, recipient, subject, or short identifier) *only if* they affect the answer.
    - Keep optimized_query <= 200 characters; remove politeness and unnecessary text.
 5. WHEN NEW:
-   - Leave the original question unchanged as optimized_query.
-6. UNCERTAINTY:
-   - If classification is uncertain, prefer NEW.
-7. FORMATTING:
+   - Rewrite the original question into a concise, self-contained query (≤200 chars) suitable for downstream tools.
+   - Include all relevant context keywords from query (sender, recipient, subject, or short identifier) *only if* they affect the answer and can be retrived via any available tool.
+6. FORMATTING:
    - Output exactly the JSON object and nothing else.
-
-Example:
-Prev: "I attached the contract draft."  
-New: "Add a GDPR clause."
-{{
-  "is_followup": true,
-  "optimized_query": "Add a GDPR clause to the attached contract draft.",
-  "selected_tools": []
-}}
+7. LIMIT HANDLING
+   - Use limit=N only if the query explicitly requests a fixed number (e.g., “latest”, “last 5”); otherwise, including summaries or entire email chains, set limit=None to return all rows.
 """
 
 SYSTEM_PROMPT = """
@@ -88,13 +77,11 @@ Decision rules (very important):
 4. If the user query is a follow-up or could be influenced by previous conversations, you must incorporate relevant prior messages in your response.
 5. If an exact answer cannot be found, clearly state that fact.
    - Instead, present the closest available information, and explain how it might still help the user based on query.
+6. If the query provides metadata filters and the filtering tool returns no results, guide the user to cross-check the fields they provided, especially the subject (if present in query), to ensure they are correct.
 
 Answer style:
 - Start with a short, polite acknowledgement of the request.
-- If the question is about retrieving or listing emails, display them with the following details:
-  **Email ID**, **Thread ID**, **From**, **To**, **CC (if any)**, **Subject**, **Date** (e.g. “Sep 5 2025, 14:30 IST”), 
-  **Labels**, **Snippet** (first ~100 chars), **Attachments** (filenames or “None”).
-  - Separate multiple emails with “---”.
+- Keep tracking id and threadId for further follow-up questions. 
 - For analytical, summary-based, or general questions, provide a broad and detailed summarized answer first, covering all relevant aspects.
 - Always end with a friendly next-step suggestion.
 
@@ -199,48 +186,40 @@ def safe_get(row, key, default=""):
         return default
     return str(value)
 
-def keyword_match(query: str, text: str, min_ratio: float = 0.75) -> bool:
-    """
-    Returns True if at least `min_ratio` (default 75%) of the keywords
-    in `query` appear somewhere in `text`, case-insensitive.
+def preprocess_subject(subject: str) -> str:
+    if not isinstance(subject, str):
+        return ""
+    # Lowercase and replace symbols with space
+    subject = re.sub(r'[:\-_,]', ' ', subject)
+    subject = re.sub(r'\s+', ' ', subject)  # normalize spaces
+    return subject.lower().strip()
 
-    Example:
-        keyword_match("Refund flat 805", "Re: Refund statement for flat 805")
-        -> True
-    """
-    # Extract alphanumeric keywords from the query
-    keywords = re.findall(r"[a-zA-Z0-9]+", query.lower())
-    if not keywords:
-        return False
-
-    # Count how many of those keywords appear in the text
-    hits = sum(1 for k in keywords if k in text.lower())
-
-    # Calculate how many matches we need (ceil to avoid rounding down)
-    required = math.ceil(len(keywords) * min_ratio)
-
-    return hits >= required
-
-def token_match(query: str, text: str, threshold: float = 0.75) -> bool:
-    q_tokens = set(query.lower().split())
-    t_tokens = set(text.lower().split())
-
-    overlap = len(q_tokens & t_tokens) / len(q_tokens)
-    return overlap >= threshold
+def extract_numbers(text: str) -> set[str]:
+    return set(re.findall(r'\b\d+\b', text))
 
 def smart_subject_match(user_value: str, column_value: str) -> bool:
-    """
-    Strong subject matcher:
-      1. ≥70% token overlap
-      2. ≥75% keyword coverage
-    """
-    if not isinstance(column_value, str) or not column_value:
+    if not column_value:
+        return False
+    
+    user_clean = preprocess_subject(user_value)
+    col_clean = preprocess_subject(column_value)
+
+    user_nums = extract_numbers(user_clean)
+    col_nums = extract_numbers(col_clean)
+
+    # --- Number must match if present ---
+    if user_nums and not (user_nums & col_nums):
         return False
 
-    uv = user_value.lower()
-    cv = column_value.lower()
+    # --- Fuzzy match on remaining text ---
+    fuzz_score = fuzz.token_set_ratio(user_clean, col_clean) / 100
 
-    return token_match(uv, cv, threshold=0.7) or keyword_match(uv, cv, min_ratio=0.75)
+    if user_nums:
+        # numbers match → relax threshold
+        return fuzz_score >= 0.65
+    else:
+        # no numbers → require stricter match
+        return fuzz_score >= 0.85
 
 def build_name_dict(df: pl.DataFrame) -> pl.DataFrame:
     """

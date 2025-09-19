@@ -133,12 +133,20 @@ async def reframe_user_query(user_input: str, last_messages: List[dict]) -> dict
 
 def build_agent_graph() -> StateGraph:
     """Compile the LangGraph agent once."""
+    # build the graph
     builder = StateGraph(MessagesState)
+
+    # Add the nodes
     builder.add_node("call_model", call_model)
     builder.add_node("tools", tool_node)
-    builder.add_edge(START, "call_model")
+
+    # add conditional edges
     builder.add_conditional_edges("call_model", should_continue, ["tools", END])
+
+    # add the edges
+    builder.add_edge(START, "call_model")
     builder.add_edge("tools", "call_model")
+
     return builder.compile()
 
 # ============================================================
@@ -161,14 +169,10 @@ async def chat_loop(user_id: str) -> None:
 
         last_msgs = memory.get_thread_messages(thread_id).get("messages", [])
         reframed = await reframe_user_query(user_input, last_msgs)
-
-        if reframed["is_followup"]:
-            internal_message = {
-                "query": reframed["optimized_query"],
-                "selected_tools": reframed.get("selected_tools", []),
-            }
-        else:
-            internal_message = user_input
+        internal_message = {
+            "query": reframed["optimized_query"],
+            "selected_tools": reframed.get("selected_tools", []),
+        }
 
         print(json.dumps(internal_message), 'optimized query')
 

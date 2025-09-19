@@ -91,6 +91,8 @@ def semantic_search_tool(query: str) -> str:
         sem_metadata = search_results["metadatas"][0]
 
         for i, doc in enumerate(sem_docs):
+            if doc.startswith("Metadata:"):
+                continue
             bm25_index = doc_to_index.get(doc, None)
             bm25_score = bm25_scores[bm25_index] if bm25_index is not None else 0
             dense_score = sem_scores[i]
@@ -102,6 +104,8 @@ def semantic_search_tool(query: str) -> str:
             all_results.append((doc, email_id, combined_score))
 
         for doc, bm25_score in top_bm25_docs:
+            if doc.startswith("Metadata:"):
+                continue
             if doc not in sem_docs:
                 email_id = doc_to_meta[doc].get("email_id") if doc in doc_to_meta else None
                 all_results.append((doc, email_id, bm25_score))

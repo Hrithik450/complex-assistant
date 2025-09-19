@@ -1,8 +1,60 @@
-from lib.utils import normalize_list, match_value_in_columns, smart_subject_match, get_best_match_from_token_map
-from lib.load_data import df, token_map
+import tiktoken
+import polars as pl
+from typing import List, Tuple
+from lib.load_data import df
 from langchain.tools import tool
 from datetime import datetime, timedelta
-import polars as pl
+from langchain_openai import ChatOpenAI
+from langchain.prompts import ChatPromptTemplate
+from langchain_core.messages import HumanMessage
+from lib.utils import normalize_list, match_value_in_columns, smart_subject_match
+
+template = """
+You are an expert email summarizer.  
+
+Task:  
+- Input: Multiple emails with metadata (id, threadId, from, to, cc, Subject, date, snippet, body, labels, attachments).  
+- Group by ThreadId and summarize chronologically.  
+- Capture key points, actions, and important details with clarity and brevity.
+
+Summarize this,
+{chunk}
+"""
+prompt_perspective = ChatPromptTemplate.from_template(template)
+
+llm = ChatOpenAI(
+    model='gpt-4o-mini',
+    temperature=0,
+    max_completion_tokens=512
+)
+
+encoding_model = tiktoken.get_encoding("cl100k_base")
+def get_chunks(text: str, chunk_size: int = 10000) -> List[str]:
+    """Split a large text into token-based chunks."""
+    tokens = encoding_model.encode(text)
+
+    chunks = []
+    for i in range(0, len(tokens), chunk_size):
+        chunk_tokens = tokens[i:i+chunk_size]
+        chunk_text = encoding_model.decode(chunk_tokens)
+        chunks.append(chunk_text)
+    return chunks
+
+def count_tokens(text: str) -> int:
+    return len(encoding_model.enc(text))
+
+tasks:List[Tuple[int, List[HumanMessage], int]] = []
+
+def hierarchical_summary(formatted_results: List, chunk_size: int = 29000) -> List[str]:
+    """
+    Summarize results hierarchically, safely splitting large emails by token count.
+    """
+    for i, email_text in enumerate(formatted_results):
+        email_chunks = get_chunks(email_text, chunk_size)
+        for chunk in email_chunks:
+            tokens_est = count_tokens(chunk)
+            formatted_prompt = prompt_perspective.format(chunk=chunk)
+            tasks.append((i, [HumanMessage(content=formatted_prompt)], tokens_est))
 
 @tool("email_filtering_tool", parse_docstring=True)
 def email_filtering_tool(
@@ -19,7 +71,7 @@ def email_filtering_tool(
     html: bool = False,
     sort_by: str = "date",
     sort_order: str = "desc",
-    limit: int = 5
+    limit: int = 5,
 ) -> str:
     """
     This tool filter emails based on metadata such as sender (human), recipient (human), date range, or thread ID.
@@ -38,27 +90,27 @@ def email_filtering_tool(
         html (bool, optional): Include the full HTML body only when explicitly requested. Default False.
         sort_by (str, optional): Column to sort the results by. Default is 'date'.
         sort_order (str, optional): Sort order: 'asc' for ascending, 'desc' for descending. Default is 'desc'.
-        limit (int, optional): Maximum number of results to return. Default is 10.
+        limit (int, optional): Maximum number of results to return. Default is 5.
     """
 
     print(f"email_filtering_tool is being called {uid}, {threadId}, {sender}, {recipient}, {subject}, {cc}, {labels}, {start_date}, {end_date}, {body}, {html}, {sort_by}, {sort_order}, {limit}")
     temp_df = df.clone()
     mask = pl.lit(True)
 
+    temp_df = temp_df.with_columns([
+        temp_df["body"].struct.field("text").alias("body_text"),
+        temp_df["body"].struct.field("html").alias("body_html"),
+    ])
+
     if uid:
         mask = mask & (pl.col("id") == uid)
 
     if threadId:
         mask = mask & (pl.col("threadId") == threadId)
-    
+
     # --- Sender filter (case-insensitive, matches name or email) ---
     if sender:
         sender = sender.lower()
-        response = get_best_match_from_token_map(sender, token_map, threshold=75)
-        print(response, "optimized sender")
-        if response:
-            best_full_name, _ = response
-            sender = best_full_name
         # Add a normalized column
         temp_df = temp_df.with_columns([
             pl.col("from").map_elements(normalize_list, return_dtype=str).alias("from_normalized")
@@ -70,11 +122,6 @@ def email_filtering_tool(
     # --- Recipient filter ---
     if recipient:
         recipient = recipient.lower()
-        response = get_best_match_from_token_map(recipient, token_map, threshold=75)
-        print(response, "optimized recipient")
-        if response:
-            best_full_name, _ = response
-            recipient = best_full_name
         # Normalize 'to' and 'cc' columns which are lists
         temp_df = temp_df.with_columns([
             pl.col("to").map_elements(normalize_list, return_dtype=str).alias("to_normalized")
@@ -115,7 +162,6 @@ def email_filtering_tool(
             mask = mask & (pl.col("date_dt") <= end_date_dt)
         except Exception as e:
             return f"Error parsing end_date: {e}"
-<<<<<<< Updated upstream
         
     if labels: 
         labels = [lbl.strip().lower() for lbl in labels]
@@ -132,7 +178,7 @@ def email_filtering_tool(
         mask = mask & labels_mask
 
     if subject:    
-        subject_mask = pl.col("subject").map_elements(lambda x: smart_subject_match(subject, x) or match_value_in_columns(subject, x), return_dtype=bool)
+        subject_mask = pl.col("subject").map_elements(lambda x: smart_subject_match(subject, x), return_dtype=bool)
         mask = mask & subject_mask
 
     # Apply the mask only once
@@ -143,51 +189,23 @@ def email_filtering_tool(
         by=sort_by,
         descending=(sort_order.lower() == "desc")
     )
-=======
-
-    # Apply the mask only once
-    temp_df = temp_df.filter(mask)
->>>>>>> Stashed changes
 
     # --- Handle empty result ---
     if temp_df.is_empty():
         return "No emails found matching the specified criteria."
-<<<<<<< Updated upstream
 
     # --- Preview results ---
     total_matches = temp_df.height
     preview_cols = ["id", "threadId", "from", "to", "subject", "date", "cc", "snippet", "labels", "attachments"]
     if body:
-        preview_cols.append("body")
+        preview_cols.append("body_text")
     if html:
-        preview_cols.append("html")
-=======
+        preview_cols.append("body_html")
 
-    # --- Sorting ---
-    ascending = (sort_order.lower() == "asc")
-    if sort_by not in temp_df.columns:
-        sort_by = "date"
-    temp_df = temp_df.sort(sort_by, descending=not ascending)
-
-    # --- Total count ---
-    total_matches = temp_df.height
-
-    # --- Preview results ---
-    results_preview = temp_df.head(limit).select(['threadId', 'from', 'to', 'subject', 'date', 'cc']).to_dicts()
-    print()
-
-    formatted_results = "\n\n---\n\n".join([
-        f"threadId: {res.get('threadId', 'N/A')}\n"
-        f"From: {res.get('from', 'N/A')}\n"
-        f"To: {res.get('to', 'N/A')}\n"
-        f"CC: {res.get('cc', 'N/A')}\n"
-        f"Subject: {res.get('subject', 'N/A')}\n"
-        f"Date: {format_date(res.get('date'))}"
-        for res in results_preview
-    ])
->>>>>>> Stashed changes
-
-    results_preview = temp_df.head(limit).select(preview_cols).to_dicts()
+    if limit is None:
+        results_preview = temp_df.select(preview_cols).to_dicts()
+    else:
+        results_preview = temp_df.head(limit).select(preview_cols).to_dicts()
 
     def fmt(res):
         parts = [
@@ -203,10 +221,11 @@ def email_filtering_tool(
             f"Attachments: {res.get('attachments','N/A')}",
         ]
         if body:
-            parts.append(f"Body:\n{res.get('body','N/A')}")
+            parts.append(f"Body: {res.get('body_text','N/A')}")
         if html:
-            parts.append(f"HTML:\n{res.get('html','N/A')}")
+            parts.append(f"HTML: {res.get('body_html','N/A')}")
         return "\n".join(parts)
-
+    
     formatted_results = "\n\n---\n\n".join(fmt(r) for r in results_preview)
-    return f"Found {total_matches} emails matching the criteria. Showing {min(limit, total_matches)}:\n\n{formatted_results}"
+    shown = total_matches if limit is None else min(int(limit), total_matches)
+    return f"Found {total_matches} emails matching the criteria. Showing {shown}:\n\n{formatted_results}"
