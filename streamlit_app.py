@@ -4,6 +4,9 @@
 import os
 import sys
 
+# import nest_asyncio
+# nest_asyncio.apply()
+
 # --- THIS IS THE NEW, ROBUST FIX ---
 # This ensures the patch runs before chromadb is ever touched.
 IS_STREAMLIT_ENVIRONMENT = "streamlit" in sys.modules
@@ -20,7 +23,7 @@ if IS_STREAMLIT_ENVIRONMENT:
 import re
 import json
 import asyncio
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Coroutine
 import streamlit as st
 st.set_page_config(page_title="AI Email Assistant", page_icon="📧")
 import pytz
@@ -32,6 +35,7 @@ from rich.markdown import Markdown
 # Import the tools and agent components from your existing files
 from lib.utils import AGENT_MODEL, SYSTEM_PROMPT
 from langchain.chat_models import init_chat_model
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.prebuilt import ToolNode
 from langgraph.graph import StateGraph, MessagesState, START, END
 from tools.semantic_search_tool import semantic_search_tool
@@ -62,9 +66,14 @@ USER_ID = "63f05e7a-35ac-4deb-9f38-e2864cdf3a1d" # Hardcoded for this example
 @st.cache_resource
 def get_helper_llm():
     """Initializes a separate, cached LLM for helper tasks like query reframing."""
-    return ChatOpenAI(model="gpt-4o", temperature=0, api_key=st.secrets["OPENAI_API_KEY"])
+    # return ChatOpenAI(model="gpt-4o", temperature=0, api_key=st.secrets["OPENAI_API_KEY"])
+    return ChatGoogleGenerativeAI(
+        model="gemini-2.5-pro", 
+        temperature=0, 
+        google_api_key=st.secrets["GOOGLE_API_KEY"]
+    )
 
-async def call_llm(system_prompt: str, user_prompt: str) -> str:
+def call_llm(system_prompt: str, user_prompt: str) -> str:
     """Async helper to call the LLM."""
     llm = get_helper_llm()
     prompt = ChatPromptTemplate.from_messages([
@@ -72,7 +81,7 @@ async def call_llm(system_prompt: str, user_prompt: str) -> str:
         ("user", user_prompt),
     ])
     chain = prompt | llm | StrOutputParser()
-    response = await chain.ainvoke({})
+    response = chain.ainvoke({})
     return response
 
 def parse_json(raw_response):
@@ -84,7 +93,7 @@ def parse_json(raw_response):
         return json.loads(match.group(0))
     return None
 
-async def reframe_user_query(user_input: str, last_messages: list) -> dict:
+def reframe_user_query(user_input: str, last_messages: list) -> dict:
     """
     Analyzes user input in the context of the conversation to create an optimized query.
     """
@@ -93,13 +102,13 @@ async def reframe_user_query(user_input: str, last_messages: list) -> dict:
     )
     user_prompt = f"Conversation context:\n{context}\n\nNew user question:\n{user_input}"
     
-    raw_response = await call_llm(MEMORY_LAYER_PROMPT, user_prompt)
+    raw_response = call_llm(MEMORY_LAYER_PROMPT, user_prompt)
     try:
         result = parse_json(raw_response)
         if result is None: # Handle cases where JSON isn't found
             raise json.JSONDecodeError("No JSON found", raw_response, 0)
     except (json.JSONDecodeError, TypeError):
-        result = {"is_followup": False, "optimized_query": user_input}
+        result = {"is_followup": False, "optimized_query": user_input, "selected_tools": []}
         
     return result
 
@@ -109,6 +118,7 @@ def get_memory():
     memory = ThreadService(connection=conn, redis_client=redis_client)
     return memory
 
+@st.cache_resource
 def initialize_agent():
     """
     Initializes and compiles the LangGraph agent.
@@ -119,7 +129,12 @@ def initialize_agent():
     tool_node = ToolNode(tools)
 
     # Use Streamlit secrets for the OpenAI API key
-    model = init_chat_model(model=AGENT_MODEL, temperature=0, api_key=st.secrets["OPENAI_API_KEY"])
+    # model = init_chat_model(model=AGENT_MODEL, temperature=0, api_key=st.secrets["OPENAI_API_KEY"])
+    model = ChatGoogleGenerativeAI(
+        model="gemini-2.5-pro",
+        temperature=0.4,
+        google_api_key=st.secrets["GOOGLE_API_KEY"]
+    )
     model_with_tools = model.bind_tools(tools)
 
     def call_model(state: MessagesState) -> MessagesState:
@@ -241,7 +256,8 @@ if prompt := st.chat_input("Ask a question about your emails..."):
             history_for_reframing = st.session_state.messages[:-1]
 
             # 2. Run the async reframing function
-            reframed = asyncio.run(reframe_user_query(prompt, history_for_reframing))
+            # reframed = asyncio.run(reframe_user_query(prompt, history_for_reframing))
+            reframed = reframe_user_query(prompt, history_for_reframing)
 
             # (Optional) Display the reframed query for debugging
             if reframed["is_followup"]:
