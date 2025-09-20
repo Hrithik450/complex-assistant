@@ -205,7 +205,7 @@ def email_filtering_tool(
         labels = [lbl.strip().lower() for lbl in labels]
 
         temp_df = temp_df.with_columns([
-            pl.col("lables").map_elements(normalize_list, return_dtype=str).alias("labels_normalized")
+            pl.col("labels").map_elements(normalize_list, return_dtype=str).alias("labels_normalized")
         ])
 
         labels_mask = pl.col("labels_normalized").map_elements(

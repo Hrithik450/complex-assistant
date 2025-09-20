@@ -73,6 +73,7 @@ def semantic_search_tool(query: str) -> str:
     # 2. Expand into multiple queries
     expanded_queries = generate_queries.invoke({"question": query})
     all_results = []
+    metadata_results = []
 
     # 2. For each expanded query, embed and fetch document
     for q in expanded_queries:
@@ -91,8 +92,6 @@ def semantic_search_tool(query: str) -> str:
         sem_metadata = search_results["metadatas"][0]
 
         for i, doc in enumerate(sem_docs):
-            if doc.startswith("Metadata:"):
-                continue
             bm25_index = doc_to_index.get(doc, None)
             bm25_score = bm25_scores[bm25_index] if bm25_index is not None else 0
             dense_score = sem_scores[i]
@@ -101,11 +100,17 @@ def semantic_search_tool(query: str) -> str:
             # check if email_id is present inside metadata
             meta_item = sem_metadata[i] if i < len(sem_metadata) else {}
             email_id = (meta_item.get("email_id") if isinstance(meta_item, dict) else None)
-            all_results.append((doc, email_id, combined_score))
+
+            if doc.startswith("Metadata:"):
+                metadata_results.append((doc, email_id, combined_score))
+            else:
+                all_results.append((doc, email_id, combined_score))
 
         for doc, bm25_score in top_bm25_docs:
             if doc.startswith("Metadata:"):
+                metadata_results.append((doc, doc_to_meta.get(doc, {}).get("email_id") if doc in doc_to_meta else None, bm25_score))
                 continue
+
             if doc not in sem_docs:
                 email_id = doc_to_meta[doc].get("email_id") if doc in doc_to_meta else None
                 all_results.append((doc, email_id, bm25_score))
@@ -115,7 +120,7 @@ def semantic_search_tool(query: str) -> str:
     for doc, email_id, score in all_results:
         if doc not in unique_results or score > unique_results[doc]["score"]:
             unique_results[doc] = {"email_id": email_id, "score": score}
-            
+
     top_chunks = sorted(unique_results.items(), key=lambda x:x[1]["score"], reverse=True)[:25] # top 25
 
     # Re-ranking with Cross-Encoder
@@ -123,8 +128,24 @@ def semantic_search_tool(query: str) -> str:
     rerank_scores = cross_encoder.predict(pairs)
     ranked = sorted(zip(rerank_scores, top_chunks), key=lambda x: x[0], reverse=True)
 
+    # Deduplicate metadata docs separately
+    unique_metadata = {}
+    for doc, email_id, score in metadata_results:
+        if doc not in unique_metadata or score > unique_metadata[doc]["score"]:
+            unique_metadata[doc] = {"email_id": email_id, "score": score}
+
+    top_metadata = sorted(unique_metadata.items(), key=lambda x: x[1]["score"], reverse=True)
+    
+    # Combine final results: top 10 main docs, then all metadata as low-priority
     results_for_llm = []
     for _, (doc, meta) in ranked[:10]:
+        email_id = meta.get("email_id") if isinstance(meta, dict) else None
+        if email_id:
+            results_for_llm.append(f"[id: {email_id}]\n{doc}")
+        else:
+            results_for_llm.append(doc)
+
+    for doc, meta in top_metadata[:10]:
         email_id = meta.get("email_id") if isinstance(meta, dict) else None
         if email_id:
             results_for_llm.append(f"[id: {email_id}]\n{doc}")

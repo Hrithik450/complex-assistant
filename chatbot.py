@@ -12,11 +12,9 @@ from rich.console import Console
 from rich.markdown import Markdown
 from dotenv import load_dotenv
 
+from langgraph.prebuilt import ToolNode
 from langchain.chat_models import init_chat_model
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain.prompts import ChatPromptTemplate
-from langchain_openai import ChatOpenAI
-from langgraph.prebuilt import ToolNode
 from langgraph.graph import StateGraph, MessagesState, START, END
 
 # ---- Project Imports ----
@@ -26,7 +24,6 @@ from lib.db.db_service import ThreadService
 from lib.db.db_conn import conn
 from tools.semantic_search_tool import semantic_search_tool
 from tools.metadata_filtering_tool import email_filtering_tool
-from tools.sentiment_analysis_tool import sentiment_analysis_tool
 
 # ============================================================
 # CONFIG & GLOBALS
@@ -52,7 +49,7 @@ if REDIS_URL:
 memory = ThreadService(connection=conn, redis_client=redis_client)
 
 # LangGraph model + tools
-tools = [semantic_search_tool, email_filtering_tool, sentiment_analysis_tool]
+tools = [email_filtering_tool, semantic_search_tool]
 tool_node = ToolNode(tools)
 
 base_model = ChatGoogleGenerativeAI(
