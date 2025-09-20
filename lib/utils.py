@@ -374,3 +374,58 @@ def clean_date_in_jsonl():
     with open(output_file, "w", encoding="utf-8") as f:
         for record in cleaned_data:
             f.write(json.dumps(record) + "\n")
+
+# Date formatting tools
+from datetime import datetime, timezone, timedelta
+
+def parse_datetime_utc_flexible(date_str: str) -> datetime:
+    """Parse various date/time formats into a UTC-aware datetime."""
+    try:
+        dt = datetime.fromisoformat(date_str)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        else:
+            dt = dt.astimezone(timezone.utc)
+        return dt
+    except ValueError:
+        pass
+    raise ValueError(f"Cannot parse date: {date_str}")
+
+def expand_start(dt: datetime, original_str: str) -> datetime:
+    """Expand start bound depending on precision."""
+    if len(original_str) == 10:       # YYYY-MM-DD
+        return dt.replace(hour=0, minute=0, second=0)
+    else:                             # exact second
+        return dt
+
+def expand_end(dt: datetime, original_str: str, start_date: str) -> datetime:
+    """Expand end bound depending on precision."""
+    if len(original_str) == 10:       # YYYY-MM-DD
+        return dt.replace(hour=23, minute=59, second=59)
+    elif len(original_str) == 16:
+        return dt.replace(second=59)
+    elif len(original_str) == 19:
+        if original_str == start_date:
+            if original_str.endswith("00:00"):
+                return dt.replace(minute=59, second=59)
+            else:
+                return dt.replace(second=59)
+        return dt  # YYYY-MM-DD HH:MM
+    return dt
+
+def build_date_range(start_date: str, end_date: str):
+    """Return (range_start, range_end) that always forms a valid interval."""
+    if not start_date and not end_date:
+        return None, None
+    
+    range_start = parse_datetime_utc_flexible(start_date) if start_date else None
+    range_end = parse_datetime_utc_flexible(end_date) if end_date else None
+
+    if range_start:
+        range_start = expand_start(range_start, start_date)
+    if range_end:
+        range_end = expand_end(range_end, end_date, start_date)
+
+    print(range_start, range_end)
+
+    return range_start, range_end

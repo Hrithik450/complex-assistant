@@ -1,15 +1,14 @@
 import time
 import tiktoken
 import polars as pl
-from typing import List, Tuple
 from lib.load_data import df
+from datetime import datetime
+from typing import List, Tuple
 from langchain.tools import tool
-from datetime import datetime, timedelta
 from langchain_openai import ChatOpenAI
-from datetime import datetime, timedelta, timezone
 from langchain.prompts import ChatPromptTemplate
 from langchain_core.messages import HumanMessage
-from lib.utils import normalize_list, match_value_in_columns, smart_subject_match
+from lib.utils import normalize_list, match_value_in_columns, smart_subject_match, build_date_range
 
 template = """
 You are an expert email summarizer.  
@@ -85,18 +84,6 @@ def run_batch_task(tasks: List[Tuple[int, List[HumanMessage], int]], tpm_limit: 
         flush(current_batch)
 
     return results
-
-def parse_datetime_utc(date_str: str) -> datetime:
-    """
-    Parse input date string and return a UTC-aware datetime object.
-    Accepts 'YYYY-MM-DD' or 'YYYY-MM-DD HH:MM:SS'.
-    """
-    if len(date_str) == 10:  # date-only
-        dt = datetime.strptime(date_str, "%Y-%m-%d")
-    else:  # full datetime
-        dt = datetime.strptime(date_str, "%Y-%m-%d %H:%M:%S")
-    # Make it UTC-aware
-    return dt.replace(tzinfo=timezone.utc)
 
 def human_readable_date(timestamp) -> str:
     """
@@ -209,17 +196,10 @@ def email_filtering_tool(
     temp_df = temp_df.with_columns(
         pl.coalesce([dt1, dt2]).alias("date_dt")
     )
-    
-    if start_date:
-        start_dt = parse_datetime_utc(start_date)
-        mask = mask & (pl.col("date_dt") >= start_dt)
 
-    if end_date:
-        end_dt = parse_datetime_utc(end_date)
-        # If only date provided, include the full day
-        if len(end_date) == 10:
-            end_dt = end_dt + timedelta(days=1) - timedelta(seconds=1)
-        mask = mask & (pl.col("date_dt") <= end_dt)
+    range_start, range_end = build_date_range(start_date, end_date)
+    if range_start and range_end:
+        mask = mask & (pl.col("date_dt") >= range_start) & (pl.col("date_dt") <= range_end)
 
     if labels: 
         labels = [lbl.strip().lower() for lbl in labels]
