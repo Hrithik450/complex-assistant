@@ -6,6 +6,7 @@ from lib.load_data import df
 from langchain.tools import tool
 from datetime import datetime, timedelta
 from langchain_openai import ChatOpenAI
+from datetime import datetime, timedelta, timezone
 from langchain.prompts import ChatPromptTemplate
 from langchain_core.messages import HumanMessage
 from lib.utils import normalize_list, match_value_in_columns, smart_subject_match
@@ -85,6 +86,36 @@ def run_batch_task(tasks: List[Tuple[int, List[HumanMessage], int]], tpm_limit: 
 
     return results
 
+def parse_datetime_utc(date_str: str) -> datetime:
+    """
+    Parse input date string and return a UTC-aware datetime object.
+    Accepts 'YYYY-MM-DD' or 'YYYY-MM-DD HH:MM:SS'.
+    """
+    if len(date_str) == 10:  # date-only
+        dt = datetime.strptime(date_str, "%Y-%m-%d")
+    else:  # full datetime
+        dt = datetime.strptime(date_str, "%Y-%m-%d %H:%M:%S")
+    # Make it UTC-aware
+    return dt.replace(tzinfo=timezone.utc)
+
+def human_readable_date(timestamp) -> str:
+    """
+    Convert a timestamp to human-readable form.
+    Accepts: str, datetime.datetime, or None
+    """
+    if timestamp is None:
+        return "N/A"
+    
+    # If Polars datetime, convert to Python datetime
+    if not isinstance(timestamp, datetime):
+        try:
+            # Try parsing string
+            timestamp = datetime.fromisoformat(str(timestamp))
+        except Exception:
+            return "N/A"
+    
+    return timestamp.strftime("%a, %b %d, %Y %I:%M %p")
+
 @tool("email_filtering_tool", parse_docstring=True)
 def email_filtering_tool(
     uid: str = None,
@@ -117,7 +148,7 @@ def email_filtering_tool(
         end_date (str, optional): Filter emails sent on or before this date. Format: 'YYYY-MM-DD' or 'YYYY-MM-DD HH:MM:SS'.
         body (bool, optional): Include the plain-text email body only when explicitly requested. Default False.
         html (bool, optional): Include the full HTML body only when explicitly requested. Default False.
-        sort_by (str, optional): Column to sort the results by. Default is 'date'.
+        sort_by (str, optional): Column to sort the results by. Default is 'date_dt'.
         sort_order (str, optional): Sort order: 'asc' for ascending, 'desc' for descending. Default is 'desc'.
         limit (int, optional): Maximum number of results to return. set default value to 5.
     """
@@ -173,25 +204,24 @@ def email_filtering_tool(
         mask = mask & recipient_mask
 
     # --- Date filtering (normalize to datetime) ---
-    if start_date or end_date:
-        temp_df = temp_df.with_columns([
-            pl.col("date").str.strptime(pl.Datetime, format="%Y-%m-%dT%H:%M:%SZ", strict=False).alias("date_dt")
-        ])
-        
+    temp_df = temp_df.with_columns(
+        pl.col("date")
+        .str.to_datetime("%Y-%m-%dT%H:%M:%S%z", strict=False)
+        .dt.convert_time_zone("UTC")
+        .alias("date_dt")
+    )
+    
     if start_date:
-        try:
-            start_date_dt = datetime.strptime(start_date, "%Y-%m-%d")
-            mask = mask & (pl.col("date_dt") >= start_date_dt)
-        except Exception as e:
-            return f"Error parsing start_date: {e}"
+        start_dt = parse_datetime_utc(start_date)
+        mask = mask & (pl.col("date_dt") >= start_dt)
 
     if end_date:
-        try:
-            end_date_dt = datetime.strptime(end_date, "%Y-%m-%d") + timedelta(days=1) - timedelta(seconds=1)
-            mask = mask & (pl.col("date_dt") <= end_date_dt)
-        except Exception as e:
-            return f"Error parsing end_date: {e}"
-        
+        end_dt = parse_datetime_utc(end_date)
+        # If only date provided, include the full day
+        if len(end_date) == 10:
+            end_dt = end_dt + timedelta(days=1) - timedelta(seconds=1)
+        mask = mask & (pl.col("date_dt") <= end_dt)
+
     if labels: 
         labels = [lbl.strip().lower() for lbl in labels]
 
@@ -225,7 +255,7 @@ def email_filtering_tool(
 
     # --- Preview results ---
     total_matches = temp_df.height
-    preview_cols = ["id", "threadId", "from", "to", "subject", "date", "cc", "snippet", "labels", "attachments"]
+    preview_cols = ["id", "threadId", "from", "to", "subject", "date_dt", "cc", "snippet", "labels", "attachments"]
     if body:
         preview_cols.append("body_text")
     if html:
@@ -244,7 +274,7 @@ def email_filtering_tool(
             f"To: {res.get('to','N/A')}",
             f"CC: {res.get('cc','N/A')}",
             f"Subject: {res.get('subject','N/A')}",
-            f"Date: {res.get('date','N/A')}",
+            f"Date: {human_readable_date(res.get('date_dt'))}",
             f"Snippet: {res.get('snippet','N/A')}",
             f"Labels: {res.get('labels','N/A')}",
             f"Attachments: {res.get('attachments','N/A')}",

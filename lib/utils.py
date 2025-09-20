@@ -1,8 +1,9 @@
 from typing import Dict, Set, Optional, Tuple
+from datetime import datetime, timezone
 from rapidfuzz import fuzz, process
 from typing import Tuple
-from datetime import datetime
 import polars as pl
+import json
 import os
 import re
 
@@ -11,7 +12,7 @@ BASE_DIR = os.path.dirname(__file__)  # current file directory
 # CHROMA_COLLECTION_NAME = "organization_docs"
 CHROMA_COLLECTION_NAME = "organization_data"
 # CHROMA_COLLECTION_NAME = "my_document_collection"
-EMAIL_JSON_PATH = os.path.join(BASE_DIR, "data", "all_mails.jsonl")
+EMAIL_JSON_PATH = os.path.join(BASE_DIR, "data", "clean_mails.jsonl")
 TOKEN_MAP_PATH = os.path.join(BASE_DIR, "data", "token_map.jsonl")
 PICKLE_FILE_PATH = os.path.join(BASE_DIR, "data", "optimized_chunks.pkl")
 EMBEDDING_MODEL_NAME = "text-embedding-3-large"
@@ -327,3 +328,49 @@ def get_best_match_from_token_map(
         best_score = fuzz.WRatio(sender_norm, normalize_text(best_full))
         return (best_full, float(best_score)) if best_score >= threshold else None
     return (full_name, float(score))
+
+def clean_date_in_jsonl():
+    input_file = "lib/data/all_mails.jsonl"
+    output_file = "lib/data/clean_mails.jsonl"
+
+    def clean_date_str(date_str: str) -> str:
+        """Clean ISO8601 timestamp string and convert to UTC."""
+        if not date_str:
+            return None
+
+        date_str = date_str.strip()
+
+        # Remove trailing Z if offset exists
+        if ("+" in date_str or "-" in date_str) and date_str.endswith("Z"):
+            date_str = date_str[:-1]
+
+        # Remove double +00:00 after offset
+        if date_str[-6:] == "+00:00" and ("+" in date_str[:-6] or "-" in date_str[:-6]):
+            date_str = date_str[:-6]
+
+        # Replace bare Z with +00:00
+        if date_str.endswith("Z"):
+            date_str = date_str[:-1] + "+00:00"
+
+        # Parse datetime with offset
+        try:
+            dt = datetime.strptime(date_str, "%Y-%m-%dT%H:%M:%S%z")
+        except ValueError:
+            return date_str  # keep original if parsing fails
+
+        # Convert to UTC and format as ISO string
+        dt_utc = dt.astimezone(timezone.utc)
+        return dt_utc.strftime("%Y-%m-%dT%H:%M:%S%z")
+
+    # Process JSONL
+    cleaned_data = []
+    with open(input_file, "r", encoding="utf-8") as f:
+        for line in f:
+            record = json.loads(line)
+            record["date"] = clean_date_str(record.get("date"))
+            cleaned_data.append(record)
+
+    # Save cleaned JSONL
+    with open(output_file, "w", encoding="utf-8") as f:
+        for record in cleaned_data:
+            f.write(json.dumps(record) + "\n")
