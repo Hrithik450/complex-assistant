@@ -1,7 +1,7 @@
 from langchain.tools import tool
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 import polars as pl
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 # Import the full email DataFrame
 from lib.load_data import df
@@ -11,6 +11,33 @@ from lib.utils import normalize_list, match_value_in_columns, smart_subject_matc
 
 # Initialize the VADER analyzer once
 analyzer = SentimentIntensityAnalyzer()
+
+def parse_datetime_utc(date_str: str) -> datetime:
+    """
+    Parse input date string and return a UTC-aware datetime object.
+    Accepts 'YYYY-MM-DD' or 'YYYY-MM-DD HH:MM:SS'.
+    """
+    if len(date_str) == 10:  # date-only
+        dt = datetime.strptime(date_str, "%Y-%m-%d")
+    else:  # full datetime
+        dt = datetime.strptime(date_str, "%Y-%m-%d %H:%M:%S")
+    return dt.replace(tzinfo=timezone.utc)
+
+def human_readable_date(timestamp) -> str:
+    """
+    Convert a timestamp to human-readable form.
+    Accepts: str, datetime.datetime, or None
+    """
+    if timestamp is None:
+        return "N/A"
+    
+    if not isinstance(timestamp, datetime):
+        try:
+            timestamp = datetime.fromisoformat(str(timestamp))
+        except Exception:
+            return "N/A"
+    
+    return timestamp.strftime("%a, %b %d, %Y %I:%M %p")
 
 def classify_sentiment(score):
     """Classifies a VADER compound score into a category."""
@@ -42,8 +69,8 @@ def sentiment_analysis_tool(
         sender (str or list of str, optional): Filter emails by sender(s). Can be full email address, partial email, or sender names (case-insensitive, only humans).
         recipient (str or list of str, optional): Filter emails by recipient(s). Can be full email addresses, partial emails, or recipient names, but strictly not numbers. (case-insensitive, only humans).
         subject (str, optional): Filter email by subject text. Can be full or partial subject string (case-insensitive).
-        start_date (str, optional): The start date for the analysis (YYYY-MM-DD).
-        end_date (str, optional): The end date for the analysis (YYYY-MM-DD).
+        start_date (str, optional): The start date for the analysis (YYYY-MM-DD or YYYY-MM-DD HH:MM:SS).
+        end_date (str, optional): The end date for the analysis (YYYY-MM-DD or YYYY-MM-DD HH:MM:SS).
         timeline_granularity (str, optional): If provided, groups sentiment by 'month' or 'year'.
     """
     print(f"sentiment_analysis_tool called with: threadId={threadId}, sender={sender}, recipient={recipient}, subject={subject}, timeline={timeline_granularity}")
@@ -90,21 +117,58 @@ def sentiment_analysis_tool(
         threadId = resolved_threadId
 
     analysis_df = df.clone()
+    mask = pl.lit(True)
+
     if threadId:
-        analysis_df = analysis_df.filter(pl.col("threadId") == threadId)
+        mask = mask & (pl.col("threadId") == threadId)
     else:
-        mask = pl.lit(True)
+        # --- Sender filter ---
         if sender:
-            mask = mask & pl.col("from").map_elements(lambda x: match_value_in_columns(sender.lower(), normalize_list(x)), return_dtype=bool)
+            sender = sender.lower()
+            analysis_df = analysis_df.with_columns(
+                pl.col("from").map_elements(normalize_list, return_dtype=str).alias("from_normalized")
+            )
+            sender_mask = pl.col("from_normalized").map_elements(lambda x: match_value_in_columns(sender, x), return_dtype=bool)
+            mask = mask & sender_mask
+
+        # --- Recipient filter (includes 'to' and 'cc') ---
         if recipient:
+            recipient = recipient.lower()
+            analysis_df = analysis_df.with_columns(
+                pl.col("to").map_elements(normalize_list, return_dtype=str).alias("to_normalized"),
+                pl.col("cc").map_elements(normalize_list, return_dtype=str).alias("cc_normalized")
+            )
             recipient_mask = (
-                pl.col("to").map_elements(lambda x: match_value_in_columns(recipient.lower(), normalize_list(x)), return_dtype=bool) |
-                pl.col("cc").map_elements(lambda x: match_value_in_columns(recipient.lower(), normalize_list(x)), return_dtype=bool)
+                pl.col("to_normalized").map_elements(lambda x: match_value_in_columns(recipient, x), return_dtype=bool) |
+                pl.col("cc_normalized").map_elements(lambda x: match_value_in_columns(recipient, x), return_dtype=bool)
             )
             mask = mask & recipient_mask
+        
+        # --- Subject filter ---
         if subject:
-            mask = mask & pl.col("subject").map_elements(lambda x: smart_subject_match(subject, x), return_dtype=bool)
-        analysis_df = analysis_df.filter(mask)
+            subject_mask = pl.col("subject").map_elements(lambda x: smart_subject_match(subject, x), return_dtype=bool)
+            mask = mask & subject_mask
+
+        # --- Date filtering (normalize to datetime) ---
+        analysis_df = analysis_df.with_columns(
+            pl.col("date")
+            .str.to_datetime("%Y-%m-%dT%H:%M:%S%z", strict=False)
+            .dt.convert_time_zone("UTC")
+            .alias("date_dt")
+        )
+        
+        if start_date:
+            start_dt = parse_datetime_utc(start_date)
+            mask = mask & (pl.col("date_dt") >= start_dt)
+
+        if end_date:
+            end_dt = parse_datetime_utc(end_date)
+            if len(end_date) == 10: # If only date provided, include the full day
+                end_dt = end_dt + timedelta(days=1) - timedelta(seconds=1)
+            mask = mask & (pl.col("date_dt") <= end_dt)
+
+    # Apply the combined mask once
+    analysis_df = analysis_df.filter(mask)
 
     if analysis_df.is_empty():
         return "No emails found for the specified criteria."
@@ -112,14 +176,14 @@ def sentiment_analysis_tool(
     # Sort emails by date to show the conversation in order
     analysis_df = analysis_df.sort("date")
 
-    if timeline_granularity or start_date or end_date:
-        analysis_df = analysis_df.with_columns(
-            pl.col("date").str.to_datetime("%Y-%m-%dT%H:%M:%SZ", strict=False).alias("date_dt")
-        )
-        if start_date:
-            analysis_df = analysis_df.filter(pl.col("date_dt") >= datetime.strptime(start_date, "%Y-%m-%d"))
-        if end_date:
-            analysis_df = analysis_df.filter(pl.col("date_dt") <= datetime.strptime(end_date, "%Y-%m-%d"))
+    # if timeline_granularity or start_date or end_date:
+    #     analysis_df = analysis_df.with_columns(
+    #         pl.col("date").str.to_datetime("%Y-%m-%dT%H:%M:%SZ", strict=False).alias("date_dt")
+    #     )
+    #     if start_date:
+    #         analysis_df = analysis_df.filter(pl.col("date_dt") >= datetime.strptime(start_date, "%Y-%m-%d"))
+    #     if end_date:
+    #         analysis_df = analysis_df.filter(pl.col("date_dt") <= datetime.strptime(end_date, "%Y-%m-%d"))
 
     safe_text_extraction_expr = (
         pl.when(pl.col("body").is_not_null())
@@ -175,7 +239,7 @@ def sentiment_analysis_tool(
         
         line = (
             f"\n- From: {sender_name}\n"
-            f"  Date: {email.get('date')}\n"
+            f"  Date: {human_readable_date(email.get('date'))}\n"
             f"  Snippet: {email.get('snippet', 'N/A')}\n"
             f"  Sentiment: {sentiment_class} (Score: {score:.2f})"
         )
