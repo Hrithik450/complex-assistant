@@ -7,7 +7,7 @@ from datetime import datetime
 from lib.load_data import df
 
 # Import helper functions
-from lib.utils import normalize_list, match_value_in_columns
+from lib.utils import normalize_list, match_value_in_columns, smart_subject_match
 
 # Initialize the VADER analyzer once
 analyzer = SentimentIntensityAnalyzer()
@@ -21,127 +21,165 @@ def classify_sentiment(score):
     else:
         return "Neutral"
 
-@tool
+@tool("sentiment_analysis_tool", parse_docstring=True)
 def sentiment_analysis_tool(
+    threadId: str = None,
     sender: str = None,
     recipient: str = None,
+    subject: str = None,
     start_date: str = None,
     end_date: str = None,
     timeline_granularity: str = None
 ) -> str:
     """
-    Analyzes the sentiment of emails based on filters like sender, recipient, or date range.
-    It can provide an overall summary or a timeline of sentiment.
-    Use this for high-level questions like "what is the overall sentiment in customer emails?" or "show me the sentiment timeline for emails from Raja."
+    Analyzes the sentiment of emails. It can analyze a complete conversation thread or filter emails by metadata.
+    If sender, recipient, and subject are provided, it will find the entire conversation thread and analyze it.
+    If only a threadId is provided, it will analyze that specific thread.
+    Otherwise, it will analyze emails matching the given filters.
 
     Args:
-        sender (str, optional): Filter emails by the sender's name or email.
-        recipient (str, optional): Filter emails by the recipient's name or email.
+        threadId (str, optional): The unique ID of the email thread to analyze.
+        sender (str or list of str, optional): Filter emails by sender(s). Can be full email address, partial email, or sender names (case-insensitive, only humans).
+        recipient (str or list of str, optional): Filter emails by recipient(s). Can be full email addresses, partial emails, or recipient names, but strictly not numbers. (case-insensitive, only humans).
+        subject (str, optional): Filter email by subject text. Can be full or partial subject string (case-insensitive).
         start_date (str, optional): The start date for the analysis (YYYY-MM-DD).
         end_date (str, optional): The end date for the analysis (YYYY-MM-DD).
-        timeline_granularity (str, optional): If provided, groups sentiment by 'month' or 'year'. If None, provides an overall summary.
+        timeline_granularity (str, optional): If provided, groups sentiment by 'month' or 'year'.
     """
-    print(f"sentiment_analysis_tool called with: sender={sender}, start_date={start_date}, end_date={end_date}, timeline={timeline_granularity}")
+    print(f"sentiment_analysis_tool called with: threadId={threadId}, sender={sender}, recipient={recipient}, subject={subject}, timeline={timeline_granularity}")
     
     if df.is_empty():
         return "Error: Email data is not loaded."
 
     temp_df = df.clone()
-
-    # --- 1. Apply Filters Sequentially ---
-    if sender:
+    
+    if not threadId and sender and recipient and subject:
+        print("Attempting to find conversation threadId...")
         sender_lower = sender.lower()
+        recipient_lower = recipient.lower()
+        
         temp_df = temp_df.with_columns(
-            pl.col("from").map_elements(normalize_list, return_dtype=str).alias("from_normalized")
-        ).filter(
-            pl.col("from_normalized").map_elements(lambda x: match_value_in_columns(sender_lower, x), return_dtype=bool)
+            pl.col("from").map_elements(normalize_list, return_dtype=str).alias("from_normalized"),
+            pl.col("to").map_elements(normalize_list, return_dtype=str).alias("to_normalized"),
+            pl.col("cc").map_elements(normalize_list, return_dtype=str).alias("cc_normalized")
         )
+        
+        a_to_b = (
+            pl.col("from_normalized").map_elements(lambda x: match_value_in_columns(sender_lower, x), return_dtype=bool) &
+            (pl.col("to_normalized").map_elements(lambda x: match_value_in_columns(recipient_lower, x), return_dtype=bool) |
+             pl.col("cc_normalized").map_elements(lambda x: match_value_in_columns(recipient_lower, x), return_dtype=bool))
+        )
+        b_to_a = (
+            pl.col("from_normalized").map_elements(lambda x: match_value_in_columns(recipient_lower, x), return_dtype=bool) &
+            (pl.col("to_normalized").map_elements(lambda x: match_value_in_columns(sender_lower, x), return_dtype=bool) |
+             pl.col("cc_normalized").map_elements(lambda x: match_value_in_columns(sender_lower, x), return_dtype=bool))
+        )
+        
+        subject_mask = pl.col("subject").map_elements(lambda x: smart_subject_match(subject, x), return_dtype=bool)
+        conversation_mask = (a_to_b | b_to_a) & subject_mask
+        matching_emails = temp_df.filter(conversation_mask)
+        
+        if matching_emails.is_empty():
+            return "No conversation thread found matching the specified sender, recipient, and subject."
+        
+        resolved_threadId = matching_emails.row(0, named=True).get("threadId")
+        if not resolved_threadId:
+            return "Could not identify a unique threadId for the conversation."
+            
+        print(f"Found threadId: {resolved_threadId}. Proceeding with analysis...")
+        threadId = resolved_threadId
 
-    if start_date or end_date or timeline_granularity:
-        temp_df = temp_df.with_columns(
+    analysis_df = df.clone()
+    if threadId:
+        analysis_df = analysis_df.filter(pl.col("threadId") == threadId)
+    else:
+        mask = pl.lit(True)
+        if sender:
+            mask = mask & pl.col("from").map_elements(lambda x: match_value_in_columns(sender.lower(), normalize_list(x)), return_dtype=bool)
+        if recipient:
+            recipient_mask = (
+                pl.col("to").map_elements(lambda x: match_value_in_columns(recipient.lower(), normalize_list(x)), return_dtype=bool) |
+                pl.col("cc").map_elements(lambda x: match_value_in_columns(recipient.lower(), normalize_list(x)), return_dtype=bool)
+            )
+            mask = mask & recipient_mask
+        if subject:
+            mask = mask & pl.col("subject").map_elements(lambda x: smart_subject_match(subject, x), return_dtype=bool)
+        analysis_df = analysis_df.filter(mask)
+
+    if analysis_df.is_empty():
+        return "No emails found for the specified criteria."
+
+    # Sort emails by date to show the conversation in order
+    analysis_df = analysis_df.sort("date")
+
+    if timeline_granularity or start_date or end_date:
+        analysis_df = analysis_df.with_columns(
             pl.col("date").str.to_datetime("%Y-%m-%dT%H:%M:%SZ", strict=False).alias("date_dt")
         )
         if start_date:
-            temp_df = temp_df.filter(pl.col("date_dt") >= datetime.strptime(start_date, "%Y-%m-%d"))
+            analysis_df = analysis_df.filter(pl.col("date_dt") >= datetime.strptime(start_date, "%Y-%m-%d"))
         if end_date:
-            temp_df = temp_df.filter(pl.col("date_dt") <= datetime.strptime(end_date, "%Y-%m-%d"))
+            analysis_df = analysis_df.filter(pl.col("date_dt") <= datetime.strptime(end_date, "%Y-%m-%d"))
 
-    filtered_df = temp_df
-
-    if filtered_df.is_empty():
-        return "No emails found for the specified criteria."
-
-    # --- 2. Map & Analyze ---
     safe_text_extraction_expr = (
         pl.when(pl.col("body").is_not_null())
-        .then(pl.col("body").struct.field("text")) # Access by the name 'text'
+        .then(pl.col("body").struct.field("text"))
         .otherwise(pl.lit(""))
     )
-
-    select_exprs = [
+    
+    # Add sentiment scores directly to the analysis dataframe
+    analysis_df = analysis_df.with_columns(
         safe_text_extraction_expr.map_elements(
             lambda text: analyzer.polarity_scores(str(text or ""))['compound'],
             return_dtype=pl.Float64
         ).alias("sentiment_score")
-    ]
-    if 'date_dt' in filtered_df.columns:
-        select_exprs.append(pl.col("date_dt").alias("date"))
+    )
 
-    sentiments = filtered_df.select(select_exprs).drop_nulls(subset=["sentiment_score"])
+    sentiments = analysis_df.select(["sentiment_score", "date_dt" if "date_dt" in analysis_df.columns else pl.lit(None, dtype=pl.Datetime).alias("date")])
 
     if sentiments.is_empty():
-        return "Found emails, but could not extract text bodies to analyze sentiment."
+        return "Found emails, but could not extract text to analyze sentiment."
 
-    # --- 3. Reduce & Synthesize ---
-    granularity = None
-    if timeline_granularity:
-        if "month" in timeline_granularity.lower():
-            granularity = "month"
-        elif "year" in timeline_granularity.lower():
-            granularity = "year"
+    # --- Synthesize and Return Results ---
+    # High-level summary (always calculated)
+    overall_summary = sentiments.select(
+        pl.mean("sentiment_score").alias("average_sentiment"),
+        pl.col("sentiment_score").map_elements(classify_sentiment, return_dtype=pl.String).value_counts().alias("sentiment_counts"),
+        pl.len().alias("total_emails")
+    ).to_dicts()[0]
 
-    if granularity in ["month", "year"]:
-        if "date" not in sentiments.columns:
-            return "Cannot create a timeline without date information."
-            
-        period = "1mo" if granularity == "month" else "1y"
+    avg_score = overall_summary['average_sentiment']
+    total_emails = overall_summary['total_emails']
+    counts_data = overall_summary['sentiment_counts']
+    if isinstance(counts_data, dict):
+        counts_data = [counts_data]
+    counts = {d['sentiment_score']: d['count'] for d in counts_data}
+    
+    summary_title = f"Overall Sentiment Analysis Summary for Thread ID: {threadId}" if threadId else "Overall Sentiment Analysis Summary"
+    summary = (
+        f"{summary_title}\n"
+        f"- Total Emails Analyzed: {total_emails}\n"
+        f"- Average Sentiment Score: {avg_score:.2f} ({classify_sentiment(avg_score)})\n"
+        f"- Positive Emails: {counts.get('Positive', 0)}\n"
+        f"- Negative Emails: {counts.get('Negative', 0)}\n"
+        f"- Neutral Emails: {counts.get('Neutral', 0)}"
+    )
+
+    # --- NEW: Detailed Breakdown by Email ---
+    breakdown_lines = ["\n---", "Sentiment Breakdown by Email (chronological):"]
+    for email in analysis_df.iter_rows(named=True):
+        score = email['sentiment_score']
+        sentiment_class = classify_sentiment(score)
+        # Format the 'from' field for better readability
+        sender_name = str(email.get('from', 'N/A')).split('<')[0].strip().replace('"', '')
         
-        timeline_summary = sentiments.drop_nulls(subset=["date"]).sort("date").group_by_dynamic("date", every=period).agg(
-            pl.mean("sentiment_score").alias("average_sentiment"),
-            pl.count().alias("email_count")
+        line = (
+            f"\n- From: {sender_name}\n"
+            f"  Date: {email.get('date')}\n"
+            f"  Snippet: {email.get('snippet', 'N/A')}\n"
+            f"  Sentiment: {sentiment_class} (Score: {score:.2f})"
         )
-        
-        if timeline_summary.is_empty():
-            return "Found emails with valid dates, but could not generate a timeline summary."
+        breakdown_lines.append(line)
 
-        summary_lines = [f"Sentiment Timeline Analysis (granularity: {granularity}):"]
-        for row in timeline_summary.to_dicts():
-            period_str = row['date'].strftime('%Y-%m' if granularity == 'month' else '%Y')
-            avg_sentiment = row['average_sentiment']
-            sentiment_class = classify_sentiment(avg_sentiment)
-            summary_lines.append(
-                f"- Period: {period_str}, Email Count: {row['email_count']}, "
-                f"Average Sentiment: {avg_sentiment:.2f} ({sentiment_class})"
-            )
-        return "\n".join(summary_lines)
-
-    else:
-        overall_summary = sentiments.select(
-            pl.mean("sentiment_score").alias("average_sentiment"),
-            pl.col("sentiment_score").map_elements(lambda s: classify_sentiment(s), return_dtype=str).value_counts().alias("sentiment_counts"),
-            pl.count().alias("total_emails")
-        ).to_dicts()[0]
-
-        avg_score = overall_summary['average_sentiment']
-        total_emails = overall_summary['total_emails']
-        counts = {d['sentiment_score']: d['count'] for d in overall_summary['sentiment_counts']}
-        
-        summary = (
-            f"Overall Sentiment Analysis Summary:\n"
-            f"- Total Emails Analyzed: {total_emails}\n"
-            f"- Average Sentiment Score: {avg_score:.2f} ({classify_sentiment(avg_score)})\n"
-            f"- Positive Emails: {counts.get('Positive', 0)}\n"
-            f"- Negative Emails: {counts.get('Negative', 0)}\n"
-            f"- Neutral Emails: {counts.get('Neutral', 0)}"
-        )
-        return summary
+    # Combine the summary and the breakdown
+    return summary + "\n" + "\n".join(breakdown_lines)

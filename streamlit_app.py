@@ -115,7 +115,7 @@ def initialize_agent():
     This is cached to avoid rebuilding the graph on every interaction.
     """
     print("Initializing LangGraph agent...")
-    tools = [semantic_search_tool, email_filtering_tool, conversation_retriever_tool, sentiment_analysis_tool, web_search_tool]
+    tools = [semantic_search_tool, email_filtering_tool, conversation_retriever_tool, sentiment_analysis_tool]
     tool_node = ToolNode(tools)
 
     # Use Streamlit secrets for the OpenAI API key
@@ -238,30 +238,34 @@ if prompt := st.chat_input("Ask a question about your emails..."):
             # --- NEW LOGIC: Reframe the query before calling the agent ---
             
             # 1. Get the recent message history for context
-            history_for_reframing = st.session_state.messages[:-1] # Exclude the latest prompt
+            history_for_reframing = st.session_state.messages[:-1]
 
             # 2. Run the async reframing function
-            # We use asyncio.run() to call our async helper from Streamlit's sync context
             reframed = asyncio.run(reframe_user_query(prompt, history_for_reframing))
-            
+
             # (Optional) Display the reframed query for debugging
             if reframed["is_followup"]:
                 st.info(f"Continuing conversation with query: `{reframed['optimized_query']}`")
 
-            # 3. Prepare the message for the agent based on the reframing result
+            # 3. Prepare the message for the agent, matching chatbot.py's logic
             if reframed["is_followup"]:
-                internal_message = {"query": reframed["optimized_query"]}
+                # Include selected_tools and the optimized query
+                internal_message = {
+                    "query": reframed["optimized_query"],
+                    "selected_tools": reframed.get("selected_tools", []),
+                }
             else:
-                internal_message = {"query": prompt} # Send as JSON even if not a followup for consistency
+                # Use the raw user input string for non-follow-ups
+                internal_message = prompt
 
-            # 4. Construct the input for the agent
+            # 4. Construct the input for the agent, matching chatbot.py's structure
             initialState = {
                 "messages": [
                     {"role": "system", "content": SYSTEM_PROMPT.format(today_date=today_date)},
-                    # We still provide the full history to the agent for its own context
-                    *st.session_state.messages[:-1], 
-                    # The final user message is the structured JSON query
-                    {"role": "user", "content": json.dumps(internal_message)}
+                    # Use only the last 5 messages for context
+                    *history_for_reframing[-5:],
+                    # The final user message is prefixed and contains the JSON-dumped internal message
+                    {"role": "user", "content": "optimized_query: " + json.dumps(internal_message)}
                 ]
             }
             
