@@ -204,11 +204,10 @@ def email_filtering_tool(
         mask = mask & recipient_mask
 
     # --- Date filtering (normalize to datetime) ---
+    dt1 = pl.col("date").str.to_datetime("%Y-%m-%dT%H:%M:%S", strict=False).dt.replace_time_zone("UTC")
+    dt2 = pl.col("date").str.to_datetime("%Y-%m-%dT%H:%M:%S%z", strict=False).dt.convert_time_zone("UTC")
     temp_df = temp_df.with_columns(
-        pl.col("date")
-        .str.to_datetime("%Y-%m-%dT%H:%M:%S%z", strict=False)
-        .dt.convert_time_zone("UTC")
-        .alias("date_dt")
+        pl.coalesce([dt1, dt2]).alias("date_dt")
     )
     
     if start_date:
