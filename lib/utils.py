@@ -1,5 +1,6 @@
 from typing import Dict, Set, Optional, Tuple
 from rapidfuzz import fuzz, process
+from typing import Tuple
 from datetime import datetime
 import polars as pl
 import os
@@ -57,7 +58,7 @@ Guidelines rules — apply in order:
 6. FORMATTING:
    - Output exactly the JSON object and nothing else.
 7. LIMIT HANDLING
-   - Use limit=N only if the query explicitly requests a fixed number (e.g., “latest”, “last 5”); otherwise, including summaries or entire email chains, set limit=None to return all rows.
+   - Use limit=N only if the query explicitly requests a fixed number (e.g., “latest”, “last 5”), elif: And set default value to 5, else: for summaries or entire email chains do not use limit parameter.
 """
 
 SYSTEM_PROMPT = """
@@ -81,7 +82,7 @@ Decision rules (very important):
 
 Answer style:
 - Start with a short, polite acknowledgement of the request.
-- Keep tracking id and threadId for further follow-up questions. 
+- Keep tracking id and threadId for further follow-up questions.
 - For analytical, summary-based, or general questions, provide a broad and detailed summarized answer first, covering all relevant aspects.
 - Always end with a friendly next-step suggestion.
 

@@ -8,7 +8,6 @@ tqdm
 faiss-cpu
 numpy
 tiktoken
-google-generativeai
 sentence-transformers
 setfit
 datasets
@@ -38,6 +37,8 @@ chromadb
 redis
 polars
 rapidfuzz
-pysqlite3-binary
 vaderSentiment
 rank_bm25
+langchain-google-genai
+geopy 
+requests

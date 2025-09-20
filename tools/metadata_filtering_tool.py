@@ -1,3 +1,4 @@
+import time
 import tiktoken
 import polars as pl
 from typing import List, Tuple
@@ -43,18 +44,46 @@ def get_chunks(text: str, chunk_size: int = 10000) -> List[str]:
 def count_tokens(text: str) -> int:
     return len(encoding_model.enc(text))
 
-tasks:List[Tuple[int, List[HumanMessage], int]] = []
+def run_batch_task(tasks: List[Tuple[int, List[HumanMessage], int]], tpm_limit: int = 29000) -> List[Tuple[int, str]]:
+    """
+    tasks: list of (task_id, messages, est_tokens)
+    tpm_limit: max tokens/minute allowed
+    returns: list of (task_id, response_text)
+    """
+    results: List[Tuple[int, str]] = []
+    current_batch: List[Tuple[int, List[HumanMessage], int]] = []
+    current_tokens = 0
+    window_start = time.time()
 
-def hierarchical_summary(formatted_results: List, chunk_size: int = 29000) -> List[str]:
-    """
-    Summarize results hierarchically, safely splitting large emails by token count.
-    """
-    for i, email_text in enumerate(formatted_results):
-        email_chunks = get_chunks(email_text, chunk_size)
-        for chunk in email_chunks:
-            tokens_est = count_tokens(chunk)
-            formatted_prompt = prompt_perspective.format(chunk=chunk)
-            tasks.append((i, [HumanMessage(content=formatted_prompt)], tokens_est))
+    def flush(batch):
+        """Send a batch to the LLM and record results."""
+        nonlocal results
+        if not batch:
+            return
+        responses = llm.batch([msgs for _, msgs, _ in batch])
+        for (task_id, _, _), resp in zip(batch, responses):
+            results.append((task_id, resp.content))
+
+    for task in tasks:
+        _, _, tok = task
+
+        if current_tokens + tok > tpm_limit and current_batch:
+            flush(current_batch)
+            current_batch, current_tokens = [], 0
+
+            # respect TPM limit
+            elapsed = time.time() - window_start
+            if elapsed < 60:
+                time.sleep(60 - elapsed)
+            window_start = time.time()
+
+        current_batch.append(task)
+        current_tokens += tok
+
+    if current_batch:
+        flush(current_batch)
+
+    return results
 
 @tool("email_filtering_tool", parse_docstring=True)
 def email_filtering_tool(
@@ -71,7 +100,7 @@ def email_filtering_tool(
     html: bool = False,
     sort_by: str = "date",
     sort_order: str = "desc",
-    limit: int = 5,
+    limit: int = None,
 ) -> str:
     """
     This tool filter emails based on metadata such as sender (human), recipient (human), date range, or thread ID.
@@ -90,7 +119,7 @@ def email_filtering_tool(
         html (bool, optional): Include the full HTML body only when explicitly requested. Default False.
         sort_by (str, optional): Column to sort the results by. Default is 'date'.
         sort_order (str, optional): Sort order: 'asc' for ascending, 'desc' for descending. Default is 'desc'.
-        limit (int, optional): Maximum number of results to return. Default is 5.
+        limit (int, optional): Maximum number of results to return. set default value to 5.
     """
 
     print(f"email_filtering_tool is being called {uid}, {threadId}, {sender}, {recipient}, {subject}, {cc}, {labels}, {start_date}, {end_date}, {body}, {html}, {sort_by}, {sort_order}, {limit}")

@@ -13,6 +13,7 @@ from rich.markdown import Markdown
 from dotenv import load_dotenv
 
 from langchain.chat_models import init_chat_model
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
 from langgraph.prebuilt import ToolNode
@@ -36,6 +37,7 @@ today_date = datetime.now(IST).strftime("%B %d, %Y")
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 REDIS_URL = os.getenv("REDIS_URL")
+GEMINI_API_KEY = os.getenv("GOOGLE_API_KEY")
 
 # Safe Redis client
 redis_client: Optional[redis.Redis] = None
@@ -53,7 +55,12 @@ memory = ThreadService(connection=conn, redis_client=redis_client)
 tools = [semantic_search_tool, email_filtering_tool, sentiment_analysis_tool]
 tool_node = ToolNode(tools)
 
-base_model = init_chat_model(model=AGENT_MODEL, temperature=0)
+base_model = ChatGoogleGenerativeAI(
+    model= "gemini-2.5-pro",
+    temperature=0.4,
+    max_retries=2,
+    google_api_key=GEMINI_API_KEY,
+)
 model_with_tools = base_model.bind_tools(tools)
 
 llm = init_chat_model(model=AGENT_MODEL, temperature=0)
