@@ -79,9 +79,13 @@ def semantic_search_tool(query: str) -> str:
     for q in expanded_queries:
         bm25_scores = bm25.get_scores(q.lower().split())
         bm25_scores = np.array(bm25_scores) / (np.max(bm25_scores)+1e-6)
-        top_bm25_indices = np.argsort(bm25_scores)[-20:][::-1]  
-        top_bm25_docs = [(index_to_doc[i], bm25_scores[i]) for i in top_bm25_indices]
-        
+        top_bm25_indices = np.argsort(bm25_scores)[::-1]
+        top_bm25_docs = []
+        for i in top_bm25_indices:
+            idx = int(i)
+            if bm25_scores[idx] > 0 and idx in index_to_doc:
+                top_bm25_docs.append((index_to_doc[idx], bm25_scores[idx]))
+
         # Create embeddings for query and filter candidate docs
         query_embedding = embedding_model.embed_query(q)
         search_results = chroma_collection.query(query_embeddings=[query_embedding])
@@ -121,7 +125,7 @@ def semantic_search_tool(query: str) -> str:
         if doc not in unique_results or score > unique_results[doc]["score"]:
             unique_results[doc] = {"email_id": email_id, "score": score}
 
-    top_chunks = sorted(unique_results.items(), key=lambda x:x[1]["score"], reverse=True)[:25] # top 25
+    top_chunks = sorted(unique_results.items(), key=lambda x:x[1]["score"], reverse=True) # top 25
 
     # Re-ranking with Cross-Encoder
     pairs = [[query, doc] for doc, _ in top_chunks]
@@ -135,17 +139,20 @@ def semantic_search_tool(query: str) -> str:
             unique_metadata[doc] = {"email_id": email_id, "score": score}
 
     top_metadata = sorted(unique_metadata.items(), key=lambda x: x[1]["score"], reverse=True)
-    
+
     # Combine final results: top 10 main docs, then all metadata as low-priority
     results_for_llm = []
-    for _, (doc, meta) in ranked[:10]:
+    for _, (doc, meta) in ranked:
         email_id = meta.get("email_id") if isinstance(meta, dict) else None
         if email_id:
             results_for_llm.append(f"[id: {email_id}]\n{doc}")
         else:
             results_for_llm.append(doc)
 
-    for doc, meta in top_metadata[:10]:
+    threshold = 50
+    for doc, meta in top_metadata[:25]:
+        if meta["score"] < threshold:
+            continue
         email_id = meta.get("email_id") if isinstance(meta, dict) else None
         if email_id:
             results_for_llm.append(f"[id: {email_id}]\n{doc}")

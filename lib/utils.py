@@ -1,9 +1,11 @@
-from typing import Dict, Set, Optional, Tuple
+from langchain_google_genai import ChatGoogleGenerativeAI
+from typing import Dict, Set, Optional, Tuple, List
+from langchain_core.messages import HumanMessage
 from datetime import datetime, timezone
 from rapidfuzz import fuzz, process
-from typing import Tuple
 import polars as pl
 import json
+import time
 import os
 import re
 
@@ -59,7 +61,9 @@ Guidelines rules — apply in order:
 6. FORMATTING:
    - Output exactly the JSON object and nothing else.
 7. LIMIT HANDLING
-   - Use limit=N only if the query explicitly requests a fixed number (e.g., “latest”, “last 5”), elif: And set default value to 5, else: for summaries or entire email chains do not use limit parameter.
+   - If the query explicitly requests a fixed number (e.g., “latest 3”, “last 5”), set limit=N.
+   - Else if the query is about listings or length-specific requests, use the default limit=5.
+   - Otherwise (e.g., summaries, full chains, analytical queries), do not use limit.
 """
 
 SYSTEM_PROMPT = """
@@ -82,6 +86,7 @@ Decision rules (very important):
 6. If the query provides metadata filters and the filtering tool returns no results, guide the user to cross-check the fields they provided, especially the subject (if present in query), to ensure they are correct.
 
 Answer style guidelines:
+0. Always Provides the response in a detailed manner by picking key aspects related to user query as priority from the informations.
 1. Start every response with a short, polite acknowledgement of the request.
 2. When handling emails (listing, filtering, or summarizing):
    - Always include both "id" and "threadId" fields explicitly in the output, if they are available.
@@ -100,9 +105,7 @@ Tone:
 - Refer to the organization naturally, e.g., "in our system", "from our company records", "in our org".
 - Use light emojis only when they enhance clarity or warmth (e.g., ✅, 📄, 💡), but never overuse them.
 - Provide responses as if you are a knowledgeable colleague in the organization, not a generic AI.
-- When presenting multiple items (like documents), clearly label them and separate sections with friendly phrasing.
 - If a search returns no results, explain it politely and suggest next steps.
-- Always maintain a helpful and confident tone.
 
 Tips to remember:
 - Track and keep **[id: EMAIL_ID]** from semantic results when used.
@@ -437,3 +440,47 @@ def build_date_range(start_date: str, end_date: str):
     print(range_start, range_end)
 
     return range_start, range_end
+
+def count_tokens(encoding_model, text: str) -> int:
+    return len(encoding_model.encode(text))
+
+def run_batch_task(llm: ChatGoogleGenerativeAI, tasks: List[Tuple[int, List[HumanMessage], int]], tpm_limit: int = 200000) -> List[Tuple[int, str]]:
+    """
+    tasks: list of (task_id, messages, est_tokens)
+    tpm_limit: max tokens/minute allowed
+    returns: list of (task_id, response_text)
+    """
+    results: List[Tuple[int, str]] = []
+    current_batch: List[Tuple[int, List[HumanMessage], int]] = []
+    current_tokens = 0
+    window_start = time.time()
+
+    def flush(batch):
+        """Send a batch to the LLM and record results."""
+        nonlocal results
+        if not batch:
+            return
+        responses = llm.batch([msgs for _, msgs, _ in batch])
+        for (task_id, _, _), resp in zip(batch, responses):
+            results.append((task_id, resp.content))
+
+    for task in tasks:
+        _, _, tok = task
+
+        if current_tokens + tok > tpm_limit and current_batch:
+            flush(current_batch)
+            current_batch, current_tokens = [], 0
+
+            # respect TPM limit
+            elapsed = time.time() - window_start
+            if elapsed < 60:
+                time.sleep(60 - elapsed)
+            window_start = time.time()
+
+        current_batch.append(task)
+        current_tokens += tok
+
+    if current_batch:
+        flush(current_batch)
+
+    return results
