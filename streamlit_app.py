@@ -4,8 +4,8 @@
 import os
 import sys
 
-# import nest_asyncio
-# nest_asyncio.apply()
+import nest_asyncio
+nest_asyncio.apply()
 
 # --- THIS IS THE NEW, ROBUST FIX ---
 # This ensures the patch runs before chromadb is ever touched.
@@ -43,6 +43,7 @@ from tools.metadata_filtering_tool import email_filtering_tool
 from tools.conversation_retriever_tool import conversation_retriever_tool
 from tools.sentiment_analysis_tool import sentiment_analysis_tool
 from tools.web_search_tool import web_search_tool
+from tools.summarization_tool import summarization_tool
 
 
 # This will trigger the data loading and Chroma connection via st.cache_resource
@@ -81,16 +82,25 @@ def call_llm(system_prompt: str, user_prompt: str) -> str:
         ("user", user_prompt),
     ])
     chain = prompt | llm | StrOutputParser()
-    response = chain.ainvoke({})
+    # Note: In Streamlit, it's often simpler to use .invoke() for synchronous calls
+    # unless you are building a fully async app.
+    response = chain.invoke({"system_prompt": system_prompt, "user_prompt": user_prompt})
     return response
 
 def parse_json(raw_response):
     """Safely parses a JSON object from a string."""
     if not raw_response:
         return None
-    match = re.search(r'\{.*\}', raw_response, re.S)
+    # Use a more robust regex to find the JSON object
+    match = re.search(r'```json\s*(\{.*?\})\s*```', raw_response, re.S)
+    if not match:
+        match = re.search(r'(\{.*?\})', raw_response, re.S)
+
     if match:
-        return json.loads(match.group(0))
+        try:
+            return json.loads(match.group(1))
+        except json.JSONDecodeError:
+            return None # Or handle the error as needed
     return None
 
 def reframe_user_query(user_input: str, last_messages: list) -> dict:
@@ -101,7 +111,7 @@ def reframe_user_query(user_input: str, last_messages: list) -> dict:
         [f"{msg['role'].capitalize()}: {msg['content']}" for msg in last_messages]
     )
     user_prompt = f"Conversation context:\n{context}\n\nNew user question:\n{user_input}"
-    
+
     raw_response = call_llm(MEMORY_LAYER_PROMPT, user_prompt)
     try:
         result = parse_json(raw_response)
@@ -109,7 +119,7 @@ def reframe_user_query(user_input: str, last_messages: list) -> dict:
             raise json.JSONDecodeError("No JSON found", raw_response, 0)
     except (json.JSONDecodeError, TypeError):
         result = {"is_followup": False, "optimized_query": user_input, "selected_tools": []}
-        
+
     return result
 
 def get_memory():
@@ -125,14 +135,14 @@ def initialize_agent():
     This is cached to avoid rebuilding the graph on every interaction.
     """
     print("Initializing LangGraph agent...")
-    tools = [semantic_search_tool, email_filtering_tool, conversation_retriever_tool, sentiment_analysis_tool]
+    tools = [semantic_search_tool, email_filtering_tool, conversation_retriever_tool, sentiment_analysis_tool, summarization_tool, web_search_tool]
     tool_node = ToolNode(tools)
 
     # Use Streamlit secrets for the OpenAI API key
     # model = init_chat_model(model=AGENT_MODEL, temperature=0, api_key=st.secrets["OPENAI_API_KEY"])
     model = ChatGoogleGenerativeAI(
         model="gemini-2.5-pro",
-        temperature=0.4,
+        temperature=0,
         google_api_key=st.secrets["GOOGLE_API_KEY"]
     )
     model_with_tools = model.bind_tools(tools)
@@ -233,7 +243,23 @@ if not st.session_state.thread_id:
 # Load messages for the current thread if they haven't been loaded yet
 if not st.session_state.messages:
     thread_history = memory.get_thread_messages(st.session_state.thread_id)
-    st.session_state.messages = thread_history.get("messages", [])
+    messages_from_db = thread_history.get("messages", [])
+    # 1. Group the flat list into pairs of (assistant, user)
+    it = iter(messages_from_db)
+    # This creates pairs like [(assistant_2, user_2), (assistant_1, user_1)]
+    grouped_pairs = list(zip(it, it))
+
+    # 2. Reverse the order of the pairs to get chronological order
+    # Now we have [(assistant_1, user_1), (assistant_2, user_2)]
+    grouped_pairs.reverse()
+
+    # 3. Flatten the list, swapping the order within each pair to [user, assistant]
+    corrected_messages = []
+    for assistant_msg, user_msg in grouped_pairs:
+        corrected_messages.append(user_msg)
+        corrected_messages.append(assistant_msg)
+
+    st.session_state.messages = corrected_messages
 
 # Display chat messages
 for message in st.session_state.messages:
@@ -250,29 +276,23 @@ if prompt := st.chat_input("Ask a question about your emails..."):
     # Display assistant response
     with st.chat_message("assistant"):
         with st.spinner("Thinking..."):
-            # --- NEW LOGIC: Reframe the query before calling the agent ---
-            
+            # --- START: UPDATED LOGIC FROM CHATBOT.PY ---
+
             # 1. Get the recent message history for context
             history_for_reframing = st.session_state.messages[:-1]
 
-            # 2. Run the async reframing function
-            # reframed = asyncio.run(reframe_user_query(prompt, history_for_reframing))
+            # 2. Run the reframing function
             reframed = reframe_user_query(prompt, history_for_reframing)
 
             # (Optional) Display the reframed query for debugging
-            if reframed["is_followup"]:
-                st.info(f"Continuing conversation with query: `{reframed['optimized_query']}`")
+            if reframed.get("is_followup"):
+                st.info(f"Continuing conversation with query: `{reframed.get('optimized_query')}`")
 
-            # 3. Prepare the message for the agent, matching chatbot.py's logic
-            if reframed["is_followup"]:
-                # Include selected_tools and the optimized query
-                internal_message = {
-                    "query": reframed["optimized_query"],
-                    "selected_tools": reframed.get("selected_tools", []),
-                }
-            else:
-                # Use the raw user input string for non-follow-ups
-                internal_message = prompt
+            # 3. Prepare the internal message for the agent
+            internal_message = {
+                "query": reframed["optimized_query"],
+                "selected_tools": reframed.get("selected_tools", []),
+            }
 
             # 4. Construct the input for the agent, matching chatbot.py's structure
             initialState = {
@@ -284,13 +304,15 @@ if prompt := st.chat_input("Ask a question about your emails..."):
                     {"role": "user", "content": "optimized_query: " + json.dumps(internal_message)}
                 ]
             }
-            
+
             # 5. Invoke the agent to get the final response
             final_state = email_agent_graph.invoke(initialState)
             agent_answer = final_state["messages"][-1].content
-            
+
+            # --- END: UPDATED LOGIC FROM CHATBOT.PY ---
+
             st.markdown(agent_answer)
-    
+
     # Add assistant response to chat history
     st.session_state.messages.append({"role": "assistant", "content": agent_answer})
 
@@ -299,3 +321,63 @@ if prompt := st.chat_input("Ask a question about your emails..."):
         {"role": "user", "content": prompt},
         {"role": "assistant", "content": agent_answer}
     ])
+
+# # Accept user input
+# if prompt := st.chat_input("Ask a question about your emails..."):
+#     # Add user's original message to chat history and display it
+#     st.session_state.messages.append({"role": "user", "content": prompt})
+#     with st.chat_message("user"):
+#         st.markdown(prompt)
+
+#     # Display assistant response
+#     with st.chat_message("assistant"):
+#         with st.spinner("Thinking..."):
+#             # --- NEW LOGIC: Reframe the query before calling the agent ---
+            
+#             # 1. Get the recent message history for context
+#             history_for_reframing = st.session_state.messages[:-1]
+
+#             # 2. Run the async reframing function
+#             # reframed = asyncio.run(reframe_user_query(prompt, history_for_reframing))
+#             reframed = reframe_user_query(prompt, history_for_reframing)
+
+#             # (Optional) Display the reframed query for debugging
+#             if reframed["is_followup"]:
+#                 st.info(f"Continuing conversation with query: `{reframed['optimized_query']}`")
+
+#             # 3. Prepare the message for the agent, matching chatbot.py's logic
+#             if reframed["is_followup"]:
+#                 # Include selected_tools and the optimized query
+#                 internal_message = {
+#                     "query": reframed["optimized_query"],
+#                     "selected_tools": reframed.get("selected_tools", []),
+#                 }
+#             else:
+#                 # Use the raw user input string for non-follow-ups
+#                 internal_message = prompt
+
+#             # 4. Construct the input for the agent, matching chatbot.py's structure
+#             initialState = {
+#                 "messages": [
+#                     {"role": "system", "content": SYSTEM_PROMPT.format(today_date=today_date)},
+#                     # Use only the last 5 messages for context
+#                     *history_for_reframing[-5:],
+#                     # The final user message is prefixed and contains the JSON-dumped internal message
+#                     {"role": "user", "content": "optimized_query: " + json.dumps(internal_message)}
+#                 ]
+#             }
+            
+#             # 5. Invoke the agent to get the final response
+#             final_state = email_agent_graph.invoke(initialState)
+#             agent_answer = final_state["messages"][-1].content
+            
+#             st.markdown(agent_answer)
+    
+#     # Add assistant response to chat history
+#     st.session_state.messages.append({"role": "assistant", "content": agent_answer})
+
+#     # Save the user's original prompt and the agent's answer to the database
+#     memory.put_thread_message(st.session_state.thread_id, [
+#         {"role": "user", "content": prompt},
+#         {"role": "assistant", "content": agent_answer}
+#     ])

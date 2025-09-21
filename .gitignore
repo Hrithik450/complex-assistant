@@ -26,3 +26,5 @@ venv/
 *.venv
 env/
 .env
+.*jsonl
+.*json
