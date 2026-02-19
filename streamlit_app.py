@@ -4,9 +4,6 @@
 import os
 import sys
 
-import nest_asyncio
-nest_asyncio.apply()
-
 # --- THIS IS THE NEW, ROBUST FIX ---
 # This ensures the patch runs before chromadb is ever touched.
 IS_STREAMLIT_ENVIRONMENT = "streamlit" in sys.modules
