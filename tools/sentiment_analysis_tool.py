@@ -16,7 +16,7 @@ from langchain_core.output_parsers import StrOutputParser
 import os
 
 # --- NEW: Initialize LLM and Prompt for rich sentiment analysis ---
-llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0.2, google_api_key=os.getenv("GOOGLE_API_KEY"))
+llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0.2, google_api_key=os.getenv("GEMINI_API_KEY"))
 
 sentiment_prompt_template = ChatPromptTemplate.from_template(
     """
