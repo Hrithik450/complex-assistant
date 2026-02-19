@@ -1,6 +1,6 @@
 from lib.utils import normalize_list, match_value_in_columns, safe_get
 from langchain_core.output_parsers import StrOutputParser
-from langchain.prompts import ChatPromptTemplate
+from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
 from lib.utils import AGENT_MODEL
 from langchain.tools import tool
