@@ -8,9 +8,9 @@ from typing import List, Dict, Any, Optional
 
 import pytz
 import redis
+from dotenv import load_dotenv
 from rich.console import Console
 from rich.markdown import Markdown
-from dotenv import load_dotenv
 
 from langgraph.prebuilt import ToolNode
 from langchain.chat_models import init_chat_model
@@ -18,7 +18,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import StateGraph, MessagesState, START, END
 
 # ---- Project Imports ----
-load_dotenv()
+load_dotenv(override=True)
 from lib.utils import AGENT_MODEL, SYSTEM_PROMPT, MEMORY_LAYER_PROMPT
 from lib.db.db_service import ThreadService
 from lib.db.db_conn import conn
@@ -34,7 +34,7 @@ today_date = datetime.now(IST).strftime("%B %d, %Y")
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 REDIS_URL = os.getenv("REDIS_URL")
-GEMINI_API_KEY = os.getenv("GOOGLE_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 # Safe Redis client
 redis_client: Optional[redis.Redis] = None
@@ -53,7 +53,7 @@ tools = [email_filtering_tool, semantic_search_tool]
 tool_node = ToolNode(tools)
 
 base_model = ChatGoogleGenerativeAI(
-    model= "gemini-2.5-pro",
+    model= "gemini-2.5-flash-lite",
     temperature=0.4,
     max_retries=2,
     google_api_key=GEMINI_API_KEY,
@@ -92,6 +92,7 @@ def should_continue(state: MessagesState) -> bool:
     Decides whether to call tools next based on the last model output.
     """
     messages = state["messages"]
+
     last_message = messages[-1]
     if last_message.tool_calls:
         return 'tools'
@@ -139,14 +140,12 @@ def build_agent_graph() -> StateGraph:
     """Compile the LangGraph agent once."""
     # build the graph
     builder = StateGraph(MessagesState)
-
     # Add the nodes
     builder.add_node("call_model", call_model)
     builder.add_node("tools", tool_node)
 
     # add conditional edges
     builder.add_conditional_edges("call_model", should_continue, ["tools", END])
-
     # add the edges
     builder.add_edge(START, "call_model")
     builder.add_edge("tools", "call_model")
@@ -177,9 +176,6 @@ async def chat_loop(user_id: str) -> None:
             "query": reframed["optimized_query"],
             "selected_tools": reframed.get("selected_tools", []),
         }
-
-        print(json.dumps(internal_message), 'optimized query')
-
         # Prepare initial state
         initial_state: Dict[str, Any] = {
             "messages": [
@@ -188,7 +184,7 @@ async def chat_loop(user_id: str) -> None:
                 {"role": "user", "content": "optimized_query: " + json.dumps(internal_message)}
             ]
         }
-
+        
         # Stream events
         events = email_agent_graph.astream(initial_state)
         async for event in events:

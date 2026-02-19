@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import List, Tuple
 from langchain.tools import tool
 from langchain_openai import ChatOpenAI
-from langchain.prompts import ChatPromptTemplate
+from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import HumanMessage
 from lib.utils import normalize_list, match_value_in_columns, smart_subject_match, build_date_range
 

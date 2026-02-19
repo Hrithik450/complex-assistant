@@ -3,7 +3,7 @@ from lib.load_data import chroma_collection
 from langchain.tools import tool
 from langchain_openai import OpenAIEmbeddings # <-- 1. IMPORT THE CORRECT EMBEDDING CLIENT
 from lib.utils import AGENT_MODEL, EMBEDDING_MODEL_NAME
-from langchain.prompts import ChatPromptTemplate
+from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain_openai import ChatOpenAI
 from sentence_transformers import CrossEncoder

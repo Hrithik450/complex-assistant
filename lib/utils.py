@@ -21,7 +21,7 @@ EMBEDDING_MODEL_NAME = "text-embedding-3-large"
 AGENT_MODEL = "gpt-4.1" # Or another powerful model like "gpt-4-turbo"
 
 # -------------------- SYSTEM PROMPT --------------------x
-MEMORY_LAYER_PROMPT="""
+MEMORY_LAYER_PROMPT=f"""
 You are an expert routing agent.
 
 Task:
