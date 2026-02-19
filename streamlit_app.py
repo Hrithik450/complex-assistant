@@ -68,7 +68,7 @@ def get_helper_llm():
     return ChatGoogleGenerativeAI(
         model="gemini-2.5-pro", 
         temperature=0, 
-        google_api_key=st.secrets["GOOGLE_API_KEY"]
+        google_api_key=st.secrets["GEMINI_API_KEY"]
     )
 
 def call_llm(system_prompt: str, user_prompt: str) -> str:
@@ -140,7 +140,7 @@ def initialize_agent():
     model = ChatGoogleGenerativeAI(
         model="gemini-2.5-pro",
         temperature=0,
-        google_api_key=st.secrets["GOOGLE_API_KEY"]
+        google_api_key=st.secrets["GEMINI_API_KEY"]
     )
     model_with_tools = model.bind_tools(tools)
 
