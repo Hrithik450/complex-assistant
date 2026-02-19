@@ -53,7 +53,7 @@ from lib.load_data import df, chroma_collection
 from lib.db.db_service import ThreadService
 from lib.db.db_conn import conn
 
-from langchain.prompts import ChatPromptTemplate
+from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
 from langchain_core.output_parsers import StrOutputParser
 from lib.utils import MEMORY_LAYER_PROMPT
