@@ -83,7 +83,7 @@ polars==1.38.1
 polars-runtime-32==1.38.1
 posthog==5.4.0
 protobuf==6.33.5
-psycopg2==2.9.11
+psycopg2-binary==2.9.11
 pyarrow==23.0.0
 pyasn1==0.6.2
 pyasn1_modules==0.4.2
