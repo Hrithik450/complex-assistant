@@ -11,7 +11,7 @@ from lib.utils import normalize_list, match_value_in_columns, smart_subject_matc
 
 # --- NEW: Import LLM for advanced analysis ---
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain.prompts import ChatPromptTemplate
+from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 import os
 
