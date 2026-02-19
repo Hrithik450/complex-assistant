@@ -21,7 +21,7 @@ EMBEDDING_MODEL_NAME = "text-embedding-3-large"
 AGENT_MODEL = "gpt-4.1" # Or another powerful model like "gpt-4-turbo"
 
 # -------------------- SYSTEM PROMPT --------------------x
-MEMORY_LAYER_PROMPT=f"""
+MEMORY_LAYER_PROMPT="""
 You are an expert routing agent.
 
 Task:
@@ -37,7 +37,10 @@ Output format:
   "is_followup": true | false,
   "optimized_query": "<rewritten or original question>",
   "selected_tools": [
-    {{ "name": "<tool_name>", "args": {{ ... }} }}
+    {{ 
+        "name": "<tool_name>", 
+        "args": "<arguments object>"
+    }}
   ]
 }}
 

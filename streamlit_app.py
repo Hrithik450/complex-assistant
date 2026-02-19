@@ -60,62 +60,68 @@ IST = pytz.timezone("Asia/Kolkata")
 today_date = datetime.now(IST).strftime("%B %d, %Y")
 USER_ID = "63f05e7a-35ac-4deb-9f38-e2864cdf3a1d" # Hardcoded for this example
 
+tools = [semantic_search_tool, email_filtering_tool, conversation_retriever_tool, sentiment_analysis_tool, summarization_tool, web_search_tool]
+tool_node = ToolNode(tools)
+
 # -------------------- CACHED RESOURCES --------------------
 @st.cache_resource
 def get_helper_llm():
     """Initializes a separate, cached LLM for helper tasks like query reframing."""
     # return ChatOpenAI(model="gpt-4o", temperature=0, api_key=st.secrets["OPENAI_API_KEY"])
-    return ChatGoogleGenerativeAI(
-        model="gemini-2.5-pro", 
-        temperature=0, 
-        google_api_key=st.secrets["GEMINI_API_KEY"]
-    )
+    llm = init_chat_model(model=AGENT_MODEL, temperature=0)
+    return llm.bind_tools(tools)
 
 def call_llm(system_prompt: str, user_prompt: str) -> str:
-    """Async helper to call the LLM."""
-    llm = get_helper_llm()
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", system_prompt),
-        ("user", user_prompt),
-    ])
-    chain = prompt | llm | StrOutputParser()
-    # Note: In Streamlit, it's often simpler to use .invoke() for synchronous calls
-    # unless you are building a fully async app.
-    response = chain.invoke({"system_prompt": system_prompt, "user_prompt": user_prompt})
-    return response
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt}
+    ]
+
+    # invoke expects a list of message dicts (or LangChain Message objects)
+    response = get_helper_llm().invoke(messages)
+
+    # response is an AIMessage object
+    return response.content
 
 def parse_json(raw_response):
-    """Safely parses a JSON object from a string."""
     if not raw_response:
         return None
-    # Use a more robust regex to find the JSON object
-    match = re.search(r'```json\s*(\{.*?\})\s*```', raw_response, re.S)
-    if not match:
-        match = re.search(r'(\{.*?\})', raw_response, re.S)
-
+    match = re.search(r'\{.*\}', raw_response, re.S)
     if match:
-        try:
-            return json.loads(match.group(1))
-        except json.JSONDecodeError:
-            return None # Or handle the error as needed
+        return json.loads(match.group(0))
     return None
 
-def reframe_user_query(user_input: str, last_messages: list) -> dict:
+def reframe_user_query(user_input: str, last_messages: List[dict]) -> dict:
     """
-    Analyzes user input in the context of the conversation to create an optimized query.
+    Analyze deeply & decide if user input is a follow-up or is it related to previous questions.
+    If yes -> reframe into an optimized query.
+    If no -> return original query.
     """
     context = "\n".join(
         [f"{msg['role'].capitalize()}: {msg['content']}" for msg in last_messages]
     )
-    user_prompt = f"Conversation context:\n{context}\n\nNew user question:\n{user_input}"
+
+    user_prompt = f"""
+    Conversation context: 
+    {context}
+
+    New user question:
+    {user_input}
+    """
 
     raw_response = call_llm(MEMORY_LAYER_PROMPT, user_prompt)
     try:
         result = parse_json(raw_response)
-        if result is None: # Handle cases where JSON isn't found
-            raise json.JSONDecodeError("No JSON found", raw_response, 0)
-    except (json.JSONDecodeError, TypeError):
-        result = {"is_followup": False, "optimized_query": user_input, "selected_tools": []}
+
+        if not isinstance(result, dict):
+            raise ValueError("Parsed result is not a dict")
+
+    except (json.JSONDecodeError, TypeError) as e:
+        result = {
+            "is_followup": False,
+            "optimized_query": user_input,
+            "selected_tools": []
+        }
 
     return result
 
@@ -132,20 +138,22 @@ def initialize_agent():
     This is cached to avoid rebuilding the graph on every interaction.
     """
     print("Initializing LangGraph agent...")
-    tools = [semantic_search_tool, email_filtering_tool, conversation_retriever_tool, sentiment_analysis_tool, summarization_tool, web_search_tool]
-    tool_node = ToolNode(tools)
 
     # Use Streamlit secrets for the OpenAI API key
-    # model = init_chat_model(model=AGENT_MODEL, temperature=0, api_key=st.secrets["OPENAI_API_KEY"])
-    model = ChatGoogleGenerativeAI(
-        model="gemini-2.5-pro",
-        temperature=0,
-        google_api_key=st.secrets["GEMINI_API_KEY"]
-    )
+    model = init_chat_model(model=AGENT_MODEL, temperature=0, api_key=st.secrets["OPENAI_API_KEY"])
+    # model = ChatGoogleGenerativeAI(
+    #     model="gemini-2.5-flash",
+    #     temperature=0,
+    #     google_api_key=st.secrets["GEMINI_API_KEY"]
+    # )
     model_with_tools = model.bind_tools(tools)
 
     def call_model(state: MessagesState) -> MessagesState:
+        """
+        Sends messages to the model and returns the response wrapped in MessagesState format.
+        """
         messages = state["messages"]
+
         response = model_with_tools.invoke(input=messages)
         return {"messages": [response]}
 
@@ -264,11 +272,11 @@ for message in st.session_state.messages:
         st.markdown(message["content"])
 
 # Accept user input
-if prompt := st.chat_input("Ask a question about your emails..."):
+if input := st.chat_input("Ask a question about your emails..."):
     # Add user's original message to chat history and display it
-    st.session_state.messages.append({"role": "user", "content": prompt})
+    st.session_state.messages.append({"role": "user", "content": input})
     with st.chat_message("user"):
-        st.markdown(prompt)
+        st.markdown(input)
 
     # Display assistant response
     with st.chat_message("assistant"):
@@ -279,7 +287,7 @@ if prompt := st.chat_input("Ask a question about your emails..."):
             history_for_reframing = st.session_state.messages[:-1]
 
             # 2. Run the reframing function
-            reframed = reframe_user_query(prompt, history_for_reframing)
+            reframed = reframe_user_query(input, history_for_reframing)
 
             # (Optional) Display the reframed query for debugging
             if reframed.get("is_followup"):
@@ -307,7 +315,6 @@ if prompt := st.chat_input("Ask a question about your emails..."):
             agent_answer = final_state["messages"][-1].content
 
             # --- END: UPDATED LOGIC FROM CHATBOT.PY ---
-
             st.markdown(agent_answer)
 
     # Add assistant response to chat history
@@ -315,66 +322,6 @@ if prompt := st.chat_input("Ask a question about your emails..."):
 
     # Save the user's original prompt and the agent's answer to the database
     memory.put_thread_message(st.session_state.thread_id, [
-        {"role": "user", "content": prompt},
+        {"role": "user", "content": input},
         {"role": "assistant", "content": agent_answer}
     ])
-
-# # Accept user input
-# if prompt := st.chat_input("Ask a question about your emails..."):
-#     # Add user's original message to chat history and display it
-#     st.session_state.messages.append({"role": "user", "content": prompt})
-#     with st.chat_message("user"):
-#         st.markdown(prompt)
-
-#     # Display assistant response
-#     with st.chat_message("assistant"):
-#         with st.spinner("Thinking..."):
-#             # --- NEW LOGIC: Reframe the query before calling the agent ---
-            
-#             # 1. Get the recent message history for context
-#             history_for_reframing = st.session_state.messages[:-1]
-
-#             # 2. Run the async reframing function
-#             # reframed = asyncio.run(reframe_user_query(prompt, history_for_reframing))
-#             reframed = reframe_user_query(prompt, history_for_reframing)
-
-#             # (Optional) Display the reframed query for debugging
-#             if reframed["is_followup"]:
-#                 st.info(f"Continuing conversation with query: `{reframed['optimized_query']}`")
-
-#             # 3. Prepare the message for the agent, matching chatbot.py's logic
-#             if reframed["is_followup"]:
-#                 # Include selected_tools and the optimized query
-#                 internal_message = {
-#                     "query": reframed["optimized_query"],
-#                     "selected_tools": reframed.get("selected_tools", []),
-#                 }
-#             else:
-#                 # Use the raw user input string for non-follow-ups
-#                 internal_message = prompt
-
-#             # 4. Construct the input for the agent, matching chatbot.py's structure
-#             initialState = {
-#                 "messages": [
-#                     {"role": "system", "content": SYSTEM_PROMPT.format(today_date=today_date)},
-#                     # Use only the last 5 messages for context
-#                     *history_for_reframing[-5:],
-#                     # The final user message is prefixed and contains the JSON-dumped internal message
-#                     {"role": "user", "content": "optimized_query: " + json.dumps(internal_message)}
-#                 ]
-#             }
-            
-#             # 5. Invoke the agent to get the final response
-#             final_state = email_agent_graph.invoke(initialState)
-#             agent_answer = final_state["messages"][-1].content
-            
-#             st.markdown(agent_answer)
-    
-#     # Add assistant response to chat history
-#     st.session_state.messages.append({"role": "assistant", "content": agent_answer})
-
-#     # Save the user's original prompt and the agent's answer to the database
-#     memory.put_thread_message(st.session_state.thread_id, [
-#         {"role": "user", "content": prompt},
-#         {"role": "assistant", "content": agent_answer}
-#     ])
