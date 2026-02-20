@@ -1,7 +1,6 @@
 # --- THIS IS THE FIX ---
 # It checks if the app is running on Streamlit Cloud by looking for a specific environment variable.
 # The sqlite3 patch will ONLY run when deployed to the cloud.
-import os
 import sys
 
 # --- THIS IS THE NEW, ROBUST FIX ---
@@ -15,33 +14,30 @@ if IS_STREAMLIT_ENVIRONMENT:
         print("Successfully patched sqlite3.")
     except ImportError:
         print("pysqlite3-binary not found, skipping patch.")
-# --- END OF FIX ---
 
-import re
-import json
-import asyncio
-from typing import List, Dict, Any, Optional, Coroutine
-import streamlit as st
-st.set_page_config(page_title="AI Email Assistant", page_icon="📧")
 import pytz
+import json
 import redis
+from typing import List
+import streamlit as st
 from datetime import datetime
-from rich.console import Console
-from rich.markdown import Markdown
+
+st.set_page_config(page_title="AI Email Assistant", page_icon="📧")
 
 # Import the tools and agent components from your existing files
-from lib.utils import AGENT_MODEL, SYSTEM_PROMPT
+from langgraph.prebuilt import ToolNode
 from langchain.chat_models import init_chat_model
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langgraph.prebuilt import ToolNode
 from langgraph.graph import StateGraph, MessagesState, START, END
-from tools.semantic_search_tool import semantic_search_tool
-from tools.metadata_filtering_tool import email_filtering_tool
-from tools.conversation_retriever_tool import conversation_retriever_tool
-from tools.sentiment_analysis_tool import sentiment_analysis_tool
+from lib.utils import AGENT_MODEL, SYSTEM_PROMPT,MEMORY_LAYER_PROMPT
+from lib.helpers.general import parse_json
+
 from tools.web_search_tool import web_search_tool
 from tools.summarization_tool import summarization_tool
-
+from tools.semantic_search_tool import semantic_search_tool
+from tools.metadata_filtering_tool import email_filtering_tool
+from tools.sentiment_analysis_tool import sentiment_analysis_tool
+from tools.conversation_retriever_tool import conversation_retriever_tool
 
 # This will trigger the data loading and Chroma connection via st.cache_resource
 from lib.load_data import df, chroma_collection
@@ -49,11 +45,6 @@ from lib.load_data import df, chroma_collection
 # Import your database logic
 from lib.db.db_service import ThreadService
 from lib.db.db_conn import conn
-
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_openai import ChatOpenAI
-from langchain_core.output_parsers import StrOutputParser
-from lib.utils import MEMORY_LAYER_PROMPT
 
 # -------------------- CONFIG --------------------
 IST = pytz.timezone("Asia/Kolkata")
@@ -63,33 +54,34 @@ USER_ID = "63f05e7a-35ac-4deb-9f38-e2864cdf3a1d" # Hardcoded for this example
 tools = [semantic_search_tool, email_filtering_tool, conversation_retriever_tool, sentiment_analysis_tool, summarization_tool, web_search_tool]
 tool_node = ToolNode(tools)
 
-# -------------------- CACHED RESOURCES --------------------
 @st.cache_resource
-def get_helper_llm():
-    """Initializes a separate, cached LLM for helper tasks like query reframing."""
-    # return ChatOpenAI(model="gpt-4o", temperature=0, api_key=st.secrets["OPENAI_API_KEY"])
-    llm = init_chat_model(model=AGENT_MODEL, temperature=0)
-    return llm.bind_tools(tools)
+def get_base_model():
+    base_model = ChatGoogleGenerativeAI(
+        model= "gemini-2.5-flash-lite",
+        temperature=0.4,
+        max_retries=2,
+        google_api_key=st.secrets['GEMINI_API_KEY'],
+    )
+    return base_model.bind_tools(tools)
 
-def call_llm(system_prompt: str, user_prompt: str) -> str:
-    messages = [
+@st.cache_resource
+def get_helper_model():
+    helper_model = init_chat_model(model=AGENT_MODEL, temperature=0)
+    return helper_model.bind_tools(tools)
+
+@st.cache_resource
+def get_memory():
+    """Initializes and returns the Redis client and ThreadService."""
+    redis_client = redis.from_url(st.secrets["REDIS_URL"], decode_responses=True)
+    memory = ThreadService(connection=conn, redis_client=redis_client)
+    return memory
+
+def call_helper_model(system_prompt: str, user_prompt: str) -> str:
+    response = get_helper_model().invoke([
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt}
-    ]
-
-    # invoke expects a list of message dicts (or LangChain Message objects)
-    response = get_helper_llm().invoke(messages)
-
-    # response is an AIMessage object
+    ])
     return response.content
-
-def parse_json(raw_response):
-    if not raw_response:
-        return None
-    match = re.search(r'\{.*\}', raw_response, re.S)
-    if match:
-        return json.loads(match.group(0))
-    return None
 
 def reframe_user_query(user_input: str, last_messages: List[dict]) -> dict:
     """
@@ -109,7 +101,7 @@ def reframe_user_query(user_input: str, last_messages: List[dict]) -> dict:
     {user_input}
     """
 
-    raw_response = call_llm(MEMORY_LAYER_PROMPT, user_prompt)
+    raw_response = call_helper_model(MEMORY_LAYER_PROMPT, user_prompt)
     try:
         result = parse_json(raw_response)
 
@@ -125,12 +117,6 @@ def reframe_user_query(user_input: str, last_messages: List[dict]) -> dict:
 
     return result
 
-def get_memory():
-    """Initializes and returns the Redis client and ThreadService."""
-    redis_client = redis.from_url(st.secrets["REDIS_URL"], decode_responses=True)
-    memory = ThreadService(connection=conn, redis_client=redis_client)
-    return memory
-
 @st.cache_resource
 def initialize_agent():
     """
@@ -139,22 +125,11 @@ def initialize_agent():
     """
     print("Initializing LangGraph agent...")
 
-    # Use Streamlit secrets for the OpenAI API key
-    model = init_chat_model(model=AGENT_MODEL, temperature=0, api_key=st.secrets["OPENAI_API_KEY"])
-    # model = ChatGoogleGenerativeAI(
-    #     model="gemini-2.5-flash",
-    #     temperature=0,
-    #     google_api_key=st.secrets["GEMINI_API_KEY"]
-    # )
-    model_with_tools = model.bind_tools(tools)
-
-    def call_model(state: MessagesState) -> MessagesState:
+    def call_base_model(state: MessagesState) -> MessagesState:
         """
         Sends messages to the model and returns the response wrapped in MessagesState format.
         """
-        messages = state["messages"]
-
-        response = model_with_tools.invoke(input=messages)
+        response = get_base_model().invoke(input=state["messages"])
         return {"messages": [response]}
 
     def should_continue(state: MessagesState) -> bool:
@@ -162,14 +137,13 @@ def initialize_agent():
         return 'tools' if last_message.tool_calls else END
 
     builder = StateGraph(MessagesState)
-    builder.add_node("call_model", call_model)
+    builder.add_node("call_base_model", call_base_model)
     builder.add_node("tools", tool_node)
-    builder.add_edge(START, "call_model")
-    builder.add_conditional_edges("call_model", should_continue, ["tools", END])
-    builder.add_edge("tools", "call_model")
+    builder.add_edge(START, "call_base_model")
+    builder.add_conditional_edges("call_base_model", should_continue, ["tools", END])
+    builder.add_edge("tools", "call_base_model")
 
     agent_graph = builder.compile()
-    print("LangGraph agent initialized successfully.")
     return agent_graph
 
 # --- Load cached resources ---
@@ -249,22 +223,8 @@ if not st.session_state.thread_id:
 if not st.session_state.messages:
     thread_history = memory.get_thread_messages(st.session_state.thread_id)
     messages_from_db = thread_history.get("messages", [])
-    # 1. Group the flat list into pairs of (assistant, user)
-    it = iter(messages_from_db)
-    # This creates pairs like [(assistant_2, user_2), (assistant_1, user_1)]
-    grouped_pairs = list(zip(it, it))
 
-    # 2. Reverse the order of the pairs to get chronological order
-    # Now we have [(assistant_1, user_1), (assistant_2, user_2)]
-    grouped_pairs.reverse()
-
-    # 3. Flatten the list, swapping the order within each pair to [user, assistant]
-    corrected_messages = []
-    for assistant_msg, user_msg in grouped_pairs:
-        corrected_messages.append(user_msg)
-        corrected_messages.append(assistant_msg)
-
-    st.session_state.messages = corrected_messages
+    st.session_state.messages = messages_from_db
 
 # Display chat messages
 for message in st.session_state.messages:

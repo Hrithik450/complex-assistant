@@ -115,6 +115,14 @@ Tips to remember:
 - Track and keep **[id: EMAIL_ID]** from semantic results when used.
 """
 
+USER_PROMPT = """
+Conversation context: 
+{context}
+
+New user question:
+{user_input}
+"""
+
 # Helper functions
 def format_date(d):
     if isinstance(d, datetime):
