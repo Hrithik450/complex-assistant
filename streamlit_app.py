@@ -27,17 +27,12 @@ st.set_page_config(page_title="AI Email Assistant", page_icon="📧")
 # Import the tools and agent components from your existing files
 from langgraph.prebuilt import ToolNode
 from langchain.chat_models import init_chat_model
-from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import StateGraph, MessagesState, START, END
 from lib.utils import HELPER_MODEL, BASE_MODEL, SYSTEM_PROMPT,MEMORY_LAYER_PROMPT
 from lib.helpers.general import parse_json
 
-from tools.web_search_tool import web_search_tool
-from tools.summarization_tool import summarization_tool
 from tools.semantic_search_tool import semantic_search_tool
 from tools.metadata_filtering_tool import email_filtering_tool
-from tools.sentiment_analysis_tool import sentiment_analysis_tool
-from tools.conversation_retriever_tool import conversation_retriever_tool
 
 # This will trigger the data loading and Chroma connection via st.cache_resource
 from lib.load_data import df, chroma_collection
@@ -51,7 +46,7 @@ IST = pytz.timezone("Asia/Kolkata")
 today_date = datetime.now(IST).strftime("%B %d, %Y")
 USER_ID = "63f05e7a-35ac-4deb-9f38-e2864cdf3a1d" # Hardcoded for this example
 
-tools = [semantic_search_tool, email_filtering_tool, conversation_retriever_tool, sentiment_analysis_tool, summarization_tool, web_search_tool]
+tools = [semantic_search_tool, email_filtering_tool]
 tool_node = ToolNode(tools)
 
 @st.cache_resource

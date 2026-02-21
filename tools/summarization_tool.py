@@ -1,3 +1,4 @@
+import os
 import tiktoken
 from langchain.tools import tool
 from typing import List
@@ -6,7 +7,6 @@ from typing import List
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
-import os
 
 # --- LLM and Prompt Initialization ---
 llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0.1, google_api_key=os.getenv("GEMINI_API_KEY"))
@@ -45,7 +45,6 @@ reduce_prompt_template = ChatPromptTemplate.from_template(
     """
 )
 reduce_chain = reduce_prompt_template | llm | StrOutputParser()
-
 
 def get_text_chunks(text: str, chunk_size_tokens: int = 3000) -> List[str]:
     """Splits text into chunks based on token count."""
