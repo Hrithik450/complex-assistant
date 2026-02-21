@@ -253,6 +253,7 @@ if input := st.chat_input("Ask a question about your emails..."):
                 "query": reframed["optimized_query"],
                 "selected_tools": reframed.get("selected_tools", []),
             }
+            # st.write(internal_message)
 
             # 4. Construct the input for the agent, matching chatbot.py's structure
             initialState = {
