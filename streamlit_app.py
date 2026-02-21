@@ -100,9 +100,6 @@ def reframeUserQuery(user_input: str, last_messages: List[dict]) -> dict:
     try:
         result = parse_json(raw_response)
 
-        if not isinstance(result, dict):
-            raise ValueError("Parsed result is not a dict")
-
     except (json.JSONDecodeError, TypeError) as e:
         result = {
             "is_followup": False,
