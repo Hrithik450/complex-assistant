@@ -129,7 +129,7 @@ class ThreadService():
             FROM thread_messages
             WHERE thread_id = %s 
             ORDER BY created_at DESC
-            LIMIT 8
+            LIMIT 4
         """, (thread_id,))
         rows = cursor.fetchall()
 
