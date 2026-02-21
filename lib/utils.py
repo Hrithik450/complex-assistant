@@ -18,7 +18,8 @@ EMAIL_JSON_PATH = os.path.join(BASE_DIR, "data", "clean_mails.jsonl")
 TOKEN_MAP_PATH = os.path.join(BASE_DIR, "data", "token_map.jsonl")
 PICKLE_FILE_PATH = os.path.join(BASE_DIR, "data", "optimized_chunks.pkl")
 EMBEDDING_MODEL_NAME = "text-embedding-3-large"
-AGENT_MODEL = "gpt-4.1" # Or another powerful model like "gpt-4-turbo"
+HELPER_MODEL = "gpt-4.1" # Or another powerful model like "gpt-4-turbo"
+BASE_MODEL = 'gpt-5-mini'
 
 # -------------------- SYSTEM PROMPT --------------------x
 MEMORY_LAYER_PROMPT="""

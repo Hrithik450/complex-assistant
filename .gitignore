@@ -28,3 +28,5 @@ env/
 .env
 .*jsonl
 .*json
+
+clean_mails

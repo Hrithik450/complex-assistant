@@ -1,8 +1,7 @@
 from lib.utils import normalize_list, match_value_in_columns, safe_get
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_openai import ChatOpenAI
-from lib.utils import AGENT_MODEL
+from lib.utils import HELPER_MODEL
 from langchain.tools import tool
 from lib.load_data import df
 import polars as pl

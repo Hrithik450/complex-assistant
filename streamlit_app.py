@@ -29,7 +29,7 @@ from langgraph.prebuilt import ToolNode
 from langchain.chat_models import init_chat_model
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import StateGraph, MessagesState, START, END
-from lib.utils import AGENT_MODEL, SYSTEM_PROMPT,MEMORY_LAYER_PROMPT
+from lib.utils import HELPER_MODEL, BASE_MODEL, SYSTEM_PROMPT,MEMORY_LAYER_PROMPT
 from lib.helpers.general import parse_json
 
 from tools.web_search_tool import web_search_tool
@@ -56,17 +56,12 @@ tool_node = ToolNode(tools)
 
 @st.cache_resource
 def get_base_model():
-    base_model = ChatGoogleGenerativeAI(
-        model= "gemini-2.5-flash-lite",
-        temperature=0.4,
-        max_retries=2,
-        google_api_key=st.secrets['GEMINI_API_KEY'],
-    )
+    base_model = init_chat_model(model=BASE_MODEL, temperature=0.4)
     return base_model.bind_tools(tools)
 
 @st.cache_resource
 def get_helper_model():
-    helper_model = init_chat_model(model=AGENT_MODEL, temperature=0)
+    helper_model = init_chat_model(model=HELPER_MODEL, temperature=0)
     return helper_model.bind_tools(tools)
 
 @st.cache_resource
@@ -83,7 +78,7 @@ def call_helper_model(system_prompt: str, user_prompt: str) -> str:
     ])
     return response.content
 
-def reframe_user_query(user_input: str, last_messages: List[dict]) -> dict:
+def reframeUserQuery(user_input: str, last_messages: List[dict]) -> dict:
     """
     Analyze deeply & decide if user input is a follow-up or is it related to previous questions.
     If yes -> reframe into an optimized query.
@@ -161,7 +156,7 @@ st.sidebar.title("Chat Sessions")
 
 if st.sidebar.button("➕ New Chat", use_container_width=True):
     # Use the first user prompt as the title for the new chat
-    st.session_state.thread_id = memory.create_new_thread(user_id=USER_ID, title="New Conversation")
+    st.session_state.thread_id = memory.createNewThread(user_id=USER_ID, title="New Conversation")
     st.session_state.messages = []
     st.rerun()
 
@@ -171,7 +166,7 @@ if st.session_state.thread_id:
     st.sidebar.markdown("### Manage Chat")
     
     # Find the current thread's title to pre-fill the text input
-    threads = memory.get_all_threads_for_user(USER_ID)
+    threads = memory.getThreads(USER_ID)
     current_thread = next((t for t in threads if t["id"] == st.session_state.thread_id), None)
     current_title = current_thread["title"] if current_thread else ""
 
@@ -179,7 +174,7 @@ if st.session_state.thread_id:
     new_title = st.sidebar.text_input("Rename chat", value=current_title, key=f"rename_{st.session_state.thread_id}")
     if st.sidebar.button("Save Name", use_container_width=True):
         if new_title and new_title != current_title:
-            memory.rename_thread(st.session_state.thread_id, new_title)
+            memory.renameThread(st.session_state.thread_id, new_title)
             st.sidebar.success("Renamed!")
             st.rerun()
 
@@ -187,7 +182,7 @@ if st.session_state.thread_id:
     with st.sidebar.expander("Delete Chat"):
         st.warning("This action cannot be undone.")
         if st.button("Confirm Delete", use_container_width=True, type="primary"):
-            memory.delete_thread(st.session_state.thread_id)
+            memory.deleteThread(st.session_state.thread_id)
             st.session_state.thread_id = None
             st.session_state.messages = []
             st.rerun()
@@ -196,7 +191,7 @@ st.sidebar.markdown("---")
 st.sidebar.markdown("**Previous Chats**")
 
 # List all existing threads with their creation dates
-all_threads = memory.get_all_threads_for_user(USER_ID)
+all_threads = memory.getThreads(USER_ID)
 for thread in all_threads:
     # Use columns for a cleaner layout
     col1, col2 = st.sidebar.columns([3, 1])
@@ -221,7 +216,7 @@ if not st.session_state.thread_id:
 
 # Load messages for the current thread if they haven't been loaded yet
 if not st.session_state.messages:
-    thread_history = memory.get_thread_messages(st.session_state.thread_id)
+    thread_history = memory.getThreadMessages(st.session_state.thread_id)
     messages_from_db = thread_history.get("messages", [])
 
     st.session_state.messages = messages_from_db
@@ -244,10 +239,10 @@ if input := st.chat_input("Ask a question about your emails..."):
             # --- START: UPDATED LOGIC FROM CHATBOT.PY ---
 
             # 1. Get the recent message history for context
-            history_for_reframing = st.session_state.messages[:-1]
+            conversation_history = memory.getRecentThreadMessages(st.session_state.thread_id)
 
             # 2. Run the reframing function
-            reframed = reframe_user_query(input, history_for_reframing)
+            reframed = reframeUserQuery(input, conversation_history['messages'])
 
             # (Optional) Display the reframed query for debugging
             if reframed.get("is_followup"):
@@ -263,9 +258,6 @@ if input := st.chat_input("Ask a question about your emails..."):
             initialState = {
                 "messages": [
                     {"role": "system", "content": SYSTEM_PROMPT.format(today_date=today_date)},
-                    # Use only the last 5 messages for context
-                    *history_for_reframing[-5:],
-                    # The final user message is prefixed and contains the JSON-dumped internal message
                     {"role": "user", "content": "optimized_query: " + json.dumps(internal_message)}
                 ]
             }
@@ -281,7 +273,5 @@ if input := st.chat_input("Ask a question about your emails..."):
     st.session_state.messages.append({"role": "assistant", "content": agent_answer})
 
     # Save the user's original prompt and the agent's answer to the database
-    memory.put_thread_message(st.session_state.thread_id, [
-        {"role": "user", "content": input},
-        {"role": "assistant", "content": agent_answer}
-    ])
+    memory.updateThreadMessages(st.session_state.thread_id, {"role": "user", "content": input})
+    memory.updateThreadMessages(st.session_state.thread_id, {"role": "assistant", "content": agent_answer})
